@@ -3,15 +3,17 @@
 DepthWizard is a local, GPU-aware demonstration and evaluation workbench for
 monocular depth on aerial imagery. A React/Vite interface calls a FastAPI
 service, which runs Depth Anything V2 and writes inspectable artifacts for each
-job. An optional, aligned digital surface model (DSM) enables a benchmark-only
-calibration and error report.
+job. A coarse reference DEM or sparse elevation GCPs can calibrate the relative
+prediction into an estimated metric DSM; an optional aligned ground-truth DSM
+enables benchmark evaluation.
 
 > **Scientific scope:** the model predicts **relative monocular depth**, not
 > metric elevation. Relative depth can order scene structure, but a single RGB
 > image does not determine absolute scale or vertical datum. DepthWizard only
-> produces a metric-looking DSM after fitting an affine mapping to supplied
-> ground truth. That full-ground-truth fit is useful for feasibility analysis;
-> it is non-deployable and must not be reported as accuracy on unseen data.
+> produces an estimated metric DSM after fitting an affine mapping to an
+> explicit reference DEM/GCP set. Fitting against the full evaluation DSM is a
+> separate benchmark-only mode: it is useful for feasibility analysis but is
+> non-deployable and must not be reported as accuracy on unseen data.
 
 No accuracy result is bundled or claimed by this repository.
 
@@ -31,7 +33,9 @@ FastAPI service (:8000) ---- GET /api/demo (precomputed synthetic fixture)
               |
               +---- Depth Anything V2 Small ---- relative depth
               |
-              +---- optional aligned DSM ---- affine fit + benchmark metrics
+              +---- optional DEM or GCPs ---- deployment-style affine estimate
+              |
+              +---- optional aligned DSM ---- benchmark/holdout metrics
               |
               `---- configured artifact root/<job_id> + /artifacts/... URLs
 ```
@@ -146,10 +150,12 @@ Set it before `npm run dev` when the API runs elsewhere.
    It is explicitly labelled and is not live model output or a benchmark result.
 2. Upload an image and analyze it to run live relative-depth inference. The first
    run may pause while model weights download.
-3. Optionally supply a spatially aligned DSM to run affine calibration and
-   calculate benchmark metrics. This uses the full valid ground truth for the
-   fit, so the resulting numbers are diagnostic only.
-4. Inspect/download the artifact URLs returned by the API. Each live response
+3. Optionally supply either a coarse reference DEM (including SRTM/CartoDEM) or
+   at least three zero-based pixel GCPs to create an estimated metric DSM.
+4. Optionally supply an aligned ground-truth DSM. Without a separate calibration
+   reference it performs a same-scene benchmark fit; with a DEM/GCP reference it
+   evaluates the fixed calibration without refitting against ground truth.
+5. Inspect/download the artifact URLs returned by the API. Each live response
    records its model, device, mode, timing, notices, and geospatial metadata.
 
 The live endpoint never substitutes the synthetic demo for failed or unavailable
@@ -172,6 +178,22 @@ Evaluation with a pixel-aligned ground-truth DSM:
 python scripts/evaluate_depth.py --image data/sample/IMAGE.tif --ground-truth data/sample/GROUND_TRUTH_DSM.tif --output-dir outputs/evaluation --max-input-size 1024
 ```
 
+Deployment-style calibration from a coarse DEM:
+
+```powershell
+python scripts/calibrate_depth.py --image data/sample/IMAGE.tif --reference-dem data/sample/REFERENCE_DEM.tif --output-dir outputs/calibrated
+```
+
+Or from sparse GCPs (CSV headers `x,y,elevation`, zero-based image pixels):
+
+```powershell
+python scripts/calibrate_depth.py --image data/sample/IMAGE.tif --gcps data/sample/GCP.csv --output-dir outputs/calibrated
+```
+
+Add `--ground-truth data/sample/GROUND_TRUTH_DSM.tif` to either calibration
+command for fixed-calibration holdout scoring; the DSM is evaluated but never
+used to refit the DEM/GCP calibration.
+
 The feasibility command answers whether the pipeline can produce coherent
 relative depth for an image. It cannot measure metric error without ground
 truth. The evaluation command uses ground-truth correlation to choose the
@@ -182,10 +204,25 @@ zero-shot metric-depth deployment. For a defensible study, choose calibration
 parameters on separate calibration tiles and evaluate on held-out tiles; the
 provided full-GT command does not implement that protocol.
 
-## ISPRS Potsdam and Vaihingen data
+## Datasets
 
-Obtain the datasets from their official source and comply with their terms.
-They are not redistributed here. A convenient local layout is:
+The official ISRO/SAC reference repository is checked first. ISPRS Potsdam is
+the primary development benchmark, Vaihingen is secondary, and SRTM 30 m or
+NRSC/Bhuvan CartoDEM can serve as coarse calibration references. A downloader
+for a compact real DC urban RGB/DSM smoke-test pair is also included. See the
+[dataset guide](docs/DATASETS.md) for current upstream status, official links,
+scientific roles, download sizes, and placement instructions.
+
+Quick real-data smoke test:
+
+```powershell
+python scripts/check_official_sac_data.py
+python scripts/download_dc_sample.py
+python scripts/evaluate_depth.py --image data/sample/dc-urban/rgb_2021.tif --ground-truth data/sample/dc-urban/dsm_2020.tif --output-dir outputs/dc-smoke-test
+```
+
+The DC RGB and DSM were acquired in different years, so this verifies the
+pipeline but is not a clean accuracy benchmark. A convenient local layout is:
 
 ```text
 data/
@@ -213,7 +250,7 @@ variants without documenting those choices.
 | --- | --- | --- |
 | `GET` | `/api/health` | Service/model/device status |
 | `GET` | `/api/demo` | Precomputed synthetic fixture; no live inference |
-| `POST` | `/api/analyze` | Multipart live inference; required `image`, optional `ground_truth_dsm` |
+| `POST` | `/api/analyze` | Live inference; `image` plus optional DSM and one DEM/GCP reference |
 | `GET` | `/artifacts/{job_id}/{filename}` | Generated artifact download |
 
 Example calls:
@@ -222,23 +259,31 @@ Example calls:
 curl.exe http://localhost:8000/api/health
 curl.exe -F "image=@data/sample/IMAGE.tif" http://localhost:8000/api/analyze
 curl.exe -F "image=@data/sample/IMAGE.tif" -F "ground_truth_dsm=@data/sample/GROUND_TRUTH_DSM.tif" http://localhost:8000/api/analyze
+curl.exe -F "image=@data/sample/IMAGE.tif" -F "reference_dem=@data/sample/SRTM.tif" http://localhost:8000/api/analyze
+curl.exe -F "image=@data/sample/IMAGE.tif" -F "gcps=@data/sample/GCP.csv" -F "gcp_sampling=bilinear" http://localhost:8000/api/analyze
 ```
+
+`reference_dem` and `gcps` are mutually exclusive. `ground_truth_dsm` is always
+an evaluation input when a deployment reference is present; otherwise it is
+used for the explicitly labelled full-ground-truth benchmark fit.
 
 Live responses include `job_id`, `demo`, `precomputed`, `model`, `device`,
 `mode`, `input`, `processing_time_seconds`, `geospatial`, `metrics`,
-`calibration`, `depth_grid`, `urls`, `artifacts`, and `notices`.
+`calibration`, `reference`, `depth_grid`, `urls`, `artifacts`, and `notices`.
 
 ## Outputs and GeoTIFF behavior
 
-A run can write `original.png`, `depth.png`, and `depth.npy`. Runs with ground
-truth can additionally write `ground_truth.png`, `error.png`, and
-`metrics.json`. API artifacts are grouped by job ID; CLI files go to the
-explicit `--output-dir`. Unless `DEPTHWIZARD_ARTIFACT_DIR` overrides it, the API
-artifact root is `backend/artifacts/`.
+A run can write `original.png`, `depth.png`, and `depth.npy`. Reference-DEM runs
+can add `reference_dem.png`; calibrated runs add calibrated DSM PNG/NPY and,
+when source georeferencing is valid, GeoTIFF. Runs with ground truth can add
+`ground_truth.png`, `error.png`, and `metrics.json`. API artifacts are grouped
+by job ID; CLI files go to the explicit `--output-dir`. Unless
+`DEPTHWIZARD_ARTIFACT_DIR` overrides it, the API artifact root is
+`backend/artifacts/`.
 
-When both calibration ground truth and a source image with a valid GeoTIFF CRS
-and affine transform are available, the pipeline can also write
-`calibrated_dsm.tif` using the source georeferencing. PNG previews and
+When a calibrated result and source image with a valid GeoTIFF CRS and affine
+transform are available, the pipeline can write `calibrated_dsm.tif` using the
+source georeferencing. PNG previews and
 `depth.npy` are visualization/numeric artifacts, not georeferenced metric
 products. A calibrated GeoTIFF inherits horizontal metadata but its vertical
 meaning is only as valid as the supplied DSM, alignment, units, and affine fit.
@@ -255,7 +300,11 @@ careful interpretation.
 - Monocular relative depth is ambiguous in absolute scale and shift and is not
   a replacement for stereo, LiDAR, photogrammetry, or surveyed elevation.
 - A full-GT affine fit is data leakage for deployment evaluation. Its metrics
-  are same-scene, post-calibration diagnostics only.
+  are same-scene, post-calibration diagnostics only. Use separate DEM/GCP
+  calibration and ground-truth inputs for defensible holdout evaluation.
+- Coarse DEM calibration supplies broad terrain scale/offset, not missing
+  building/vegetation detail; GCP estimates depend strongly on count, coverage,
+  surveying quality, and pixel registration.
 - Domain shift, haze, shadows, seasonal change, roofs/trees, image channel
   composition, resolution, tiling, and resizing can materially affect output.
 - Image/DSM misregistration, CRS or vertical-datum mismatch, and mishandled

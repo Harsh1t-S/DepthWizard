@@ -7,7 +7,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -75,8 +75,8 @@ def create_app(artifact_root: Path | None = None) -> FastAPI:
         title="DepthWizard API",
         version=API_VERSION,
         description=(
-            "Real Depth Anything V2 Small inference with optional benchmark-only "
-            "DSM calibration and geospatial exports."
+            "Real Depth Anything V2 Small inference with deployment-reference or "
+            "benchmark-only calibration and geospatial exports."
         ),
     )
     application.state.artifact_root = root
@@ -117,17 +117,31 @@ def create_app(artifact_root: Path | None = None) -> FastAPI:
         image: UploadFile = File(...),
         ground_truth_dsm: UploadFile | None = File(default=None),
         dsm: UploadFile | None = File(default=None),
+        reference_dem: UploadFile | None = File(default=None),
+        gcps: UploadFile | None = File(default=None),
+        gcp_sampling: str = Form(default="bilinear"),
     ) -> dict[str, Any]:
         if ground_truth_dsm is not None and dsm is not None:
             raise HTTPException(
                 status_code=422,
                 detail="Supply only ground_truth_dsm (preferred) or dsm, not both",
             )
+        if reference_dem is not None and gcps is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="Supply only one deployment calibration reference: reference_dem or gcps",
+            )
         selected_dsm = ground_truth_dsm or dsm
         image_bytes = await _read_upload(image, "image")
         ground_truth_bytes: bytes | None = None
         if selected_dsm is not None:
             ground_truth_bytes = await _read_upload(selected_dsm, "ground_truth_dsm")
+        reference_dem_bytes: bytes | None = None
+        if reference_dem is not None:
+            reference_dem_bytes = await _read_upload(reference_dem, "reference_dem")
+        gcps_bytes: bytes | None = None
+        if gcps is not None:
+            gcps_bytes = await _read_upload(gcps, "gcps")
 
         work = partial(
             analyze_bytes,
@@ -135,6 +149,11 @@ def create_app(artifact_root: Path | None = None) -> FastAPI:
             image_filename=image.filename or "image",
             ground_truth_bytes=ground_truth_bytes,
             ground_truth_filename=(selected_dsm.filename if selected_dsm else None),
+            reference_dem_bytes=reference_dem_bytes,
+            reference_dem_filename=(reference_dem.filename if reference_dem else None),
+            gcps_bytes=gcps_bytes,
+            gcps_filename=(gcps.filename if gcps else None),
+            gcp_sampling=gcp_sampling,
             artifact_root=request.app.state.artifact_root,
             public_artifact_base_url=_public_artifact_base(request),
         )

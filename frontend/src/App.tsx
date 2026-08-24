@@ -17,6 +17,7 @@ function errorMessage(error: unknown): string {
 export default function App() {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [dsmFile, setDsmFile] = useState<File | null>(null);
+  const [referenceFile, setReferenceFile] = useState<File | null>(null);
   const [result, setResult] = useState<AnalysisResponse | null>(null);
   const [loadingAction, setLoadingAction] = useState<LoadingAction | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -72,7 +73,7 @@ export default function App() {
       setError("Choose an RGB image or GeoTIFF before starting analysis.");
       return;
     }
-    void runRequest("analyze", (signal) => analyzeRaster(imageFile, dsmFile, signal));
+    void runRequest("analyze", (signal) => analyzeRaster(imageFile, dsmFile, referenceFile, signal));
   };
 
   const handleLoadDemo = () => {
@@ -103,6 +104,7 @@ export default function App() {
         <UploadPanel
           imageFile={imageFile}
           dsmFile={dsmFile}
+          referenceFile={referenceFile}
           loadingAction={loadingAction}
           elapsedSeconds={elapsedSeconds}
           onImageChange={(file) => {
@@ -111,6 +113,10 @@ export default function App() {
           }}
           onDsmChange={(file) => {
             setDsmFile(file);
+            setError(null);
+          }}
+          onReferenceChange={(file) => {
+            setReferenceFile(file);
             setError(null);
           }}
           onAnalyze={handleAnalyze}
@@ -126,7 +132,7 @@ export default function App() {
 
       <footer className="app-footer">
         <span>DepthWizard · SIH26175</span>
-        <p>RGB-only output is relative. Metric elevation requires an aligned reference, DEM, or GCP calibration.</p>
+        <p>RGB-only output is relative. DEM/GCP calibration estimates metric height; aligned full-GT DSM is benchmark-only.</p>
         <span>Local · Open source · Offline-ready after model download</span>
       </footer>
     </div>

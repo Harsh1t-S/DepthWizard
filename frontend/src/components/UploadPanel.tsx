@@ -4,7 +4,9 @@ import {
   FileImage,
   ImagePlus,
   LoaderCircle,
+  MapPin,
   Play,
+  Ruler,
   Satellite,
   UploadCloud,
   X,
@@ -15,14 +17,18 @@ import type { LoadingAction } from "../types/api";
 
 const ACCEPTED_RASTERS = ".jpg,.jpeg,.png,.tif,.tiff,image/jpeg,image/png,image/tiff";
 const ACCEPTED_EXTENSION = /\.(?:jpe?g|png|tiff?)$/i;
+const ACCEPTED_CALIBRATION = ".tif,.tiff,.npy,.csv,.json,image/tiff,text/csv,application/json,application/octet-stream";
+const ACCEPTED_CALIBRATION_EXTENSION = /\.(?:tiff?|npy|csv|json)$/i;
 
 interface UploadPanelProps {
   imageFile: File | null;
   dsmFile: File | null;
+  referenceFile: File | null;
   loadingAction: LoadingAction | null;
   elapsedSeconds: number;
   onImageChange: (file: File | null) => void;
   onDsmChange: (file: File | null) => void;
+  onReferenceChange: (file: File | null) => void;
   onAnalyze: () => void;
   onLoadDemo: () => void;
   onCancel: () => void;
@@ -33,7 +39,7 @@ function isAcceptedRaster(file: File): boolean {
   return ACCEPTED_EXTENSION.test(file.name);
 }
 
-function RasterFileRow({ file, onRemove, label }: { file: File; onRemove: () => void; label: string }) {
+function RasterFileRow({ file, onRemove, label, disabled = false }: { file: File; onRemove: () => void; label: string; disabled?: boolean }) {
   return (
     <div className="raster-file">
       <div className="raster-file__icon" aria-hidden="true">
@@ -47,7 +53,7 @@ function RasterFileRow({ file, onRemove, label }: { file: File; onRemove: () => 
           {label} · {formatBytes(file.size)}
         </span>
       </div>
-      <button type="button" className="icon-button" onClick={onRemove} aria-label={`Remove ${file.name}`}>
+      <button type="button" className="icon-button" onClick={onRemove} aria-label={`Remove ${file.name}`} disabled={disabled}>
         <X size={16} />
       </button>
     </div>
@@ -95,10 +101,12 @@ function LoadingState({ action, elapsed, onCancel }: { action: LoadingAction; el
 export function UploadPanel({
   imageFile,
   dsmFile,
+  referenceFile,
   loadingAction,
   elapsedSeconds,
   onImageChange,
   onDsmChange,
+  onReferenceChange,
   onAnalyze,
   onLoadDemo,
   onCancel,
@@ -106,6 +114,7 @@ export function UploadPanel({
 }: UploadPanelProps) {
   const imageInputRef = useRef<HTMLInputElement>(null);
   const dsmInputRef = useRef<HTMLInputElement>(null);
+  const referenceInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
@@ -120,14 +129,19 @@ export function UploadPanel({
     return () => URL.revokeObjectURL(nextUrl);
   }, [imageFile]);
 
-  const acceptFile = (file: File | undefined, kind: "image" | "dsm") => {
+  const acceptFile = (file: File | undefined, kind: "image" | "dsm" | "reference") => {
     if (!file) return;
-    if (!isAcceptedRaster(file)) {
+    if (kind === "reference" && !ACCEPTED_CALIBRATION_EXTENSION.test(file.name)) {
+      onValidationError("Choose a TIF/TIFF/NPY reference DEM or a CSV/JSON GCP file.");
+      return;
+    }
+    if (kind !== "reference" && !isAcceptedRaster(file)) {
       onValidationError("Choose a JPG, PNG, TIF, or TIFF raster.");
       return;
     }
     if (kind === "image") onImageChange(file);
-    else onDsmChange(file);
+    else if (kind === "dsm") onDsmChange(file);
+    else onReferenceChange(file);
   };
 
   const busy = loadingAction !== null;
@@ -139,7 +153,7 @@ export function UploadPanel({
         Scene input
       </div>
       <h2>Prepare an orbital scene</h2>
-      <p className="panel-intro">Upload a single RGB satellite tile. Add an aligned DSM only when reference calibration is available.</p>
+      <p className="panel-intro">Upload one RGB satellite tile, then optionally choose a deployment calibration source or benchmark ground truth.</p>
 
       <input
         ref={imageInputRef}
@@ -201,15 +215,56 @@ export function UploadPanel({
         </button>
       )}
 
-      <div className="optional-input">
+      <div className="optional-input optional-input--calibration">
+        <div className="optional-input__heading">
+          <div>
+            <MapPin size={15} aria-hidden="true" />
+            <span>Reference DEM / SRTM / GCP</span>
+          </div>
+          <span className="optional-chip optional-chip--calibration">Calibration</span>
+        </div>
+        <p>Deployment input for metric scale: a DEM raster/array or sparse control points.</p>
+        <input
+          ref={referenceInputRef}
+          className="visually-hidden"
+          type="file"
+          accept={ACCEPTED_CALIBRATION}
+          onChange={(event) => acceptFile(event.target.files?.[0], "reference")}
+          aria-label="Choose reference DEM, SRTM, or GCP file"
+        />
+        {referenceFile ? (
+          <RasterFileRow
+            file={referenceFile}
+            label={/\.(?:csv|json)$/i.test(referenceFile.name) ? "sparse GCP calibration" : "reference DEM calibration"}
+            disabled={busy}
+            onRemove={() => {
+              if (referenceInputRef.current) referenceInputRef.current.value = "";
+              onReferenceChange(null);
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            className="secondary-button secondary-button--full"
+            onClick={() => referenceInputRef.current?.click()}
+            disabled={busy}
+          >
+            <Ruler size={16} />
+            Add DEM or control points
+          </button>
+        )}
+        <small className="input-formats">DEM: TIF · TIFF · NPY&nbsp;&nbsp; GCP: CSV · JSON</small>
+      </div>
+
+      <div className="optional-input optional-input--benchmark">
         <div className="optional-input__heading">
           <div>
             <Database size={15} aria-hidden="true" />
-            <span>Aligned DSM</span>
+            <span>Aligned DSM ground truth</span>
           </div>
-          <span className="optional-chip">Optional</span>
+          <span className="optional-chip optional-chip--benchmark">Benchmark only</span>
         </div>
-        <p>Enables scale alignment and reference metrics when supported by the scene.</p>
+        <p>Full-coverage target used to fit and score this scene. It is not a deployment calibration input.</p>
         <input
           ref={dsmInputRef}
           className="visually-hidden"
@@ -219,7 +274,15 @@ export function UploadPanel({
           aria-label="Choose aligned DSM"
         />
         {dsmFile ? (
-          <RasterFileRow file={dsmFile} label="reference DSM" onRemove={() => onDsmChange(null)} />
+          <RasterFileRow
+            file={dsmFile}
+            label="full ground-truth DSM"
+            disabled={busy}
+            onRemove={() => {
+              if (dsmInputRef.current) dsmInputRef.current.value = "";
+              onDsmChange(null);
+            }}
+          />
         ) : (
           <button
             type="button"
@@ -228,7 +291,7 @@ export function UploadPanel({
             disabled={busy}
           >
             <ImagePlus size={16} />
-            Add reference raster
+            Add benchmark ground truth
           </button>
         )}
       </div>
@@ -256,7 +319,7 @@ export function UploadPanel({
       <div className="honesty-note">
         <span className="honesty-note__mark" aria-hidden="true">R</span>
         <p>
-          <strong>Relative by default.</strong> Monocular output encodes terrain structure, not absolute surveyed elevation. A reference DSM may calibrate scale.
+          <strong>RGB-only stays relative.</strong> DEM/GCP input produces a reference-calibrated metric estimate. A full aligned DSM is reserved for benchmark fitting.
         </p>
       </div>
     </aside>

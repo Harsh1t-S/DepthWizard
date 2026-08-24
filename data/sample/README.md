@@ -20,5 +20,25 @@ python scripts/evaluate_depth.py --image data/sample/IMAGE.tif --ground-truth da
 
 The second command uses the supplied ground truth to fit scale and shift before
 reporting error. Its output is a same-scene feasibility diagnostic, not a claim
-of deployable metric-depth accuracy. Do not commit licensed ISPRS data, private
-imagery, credentials, generated artifacts, or model weights.
+of deployable metric-depth accuracy.
+
+For an estimated metric DSM, provide exactly one deployment calibration source:
+
+```powershell
+python scripts/calibrate_depth.py --image data/sample/IMAGE.tif --reference-dem data/sample/REFERENCE_DEM.tif --output-dir outputs/calibrated
+python scripts/calibrate_depth.py --image data/sample/IMAGE.tif --gcps data/sample/GCP.csv --output-dir outputs/calibrated
+```
+
+GCP CSV uses zero-based image pixels and headers `x,y,elevation`; JSON may be a
+point list or `{ "coordinate_space": "pixel", "points": [...] }`. At least
+three distinct, in-bounds points are required.
+
+Download the compact real DC urban smoke-test pair with:
+
+```powershell
+python scripts/download_dc_sample.py
+```
+
+See `docs/DATASETS.md` for official SAC status, ISPRS, SRTM, Bhuvan, attribution,
+and scientific caveats. Do not commit licensed ISPRS data, private imagery,
+credentials, generated artifacts, or model weights.

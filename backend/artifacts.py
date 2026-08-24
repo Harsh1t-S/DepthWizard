@@ -177,6 +177,7 @@ class ArtifactWriter:
         calibrated_height: np.ndarray,
         source: ImageRaster,
         valid_mask: np.ndarray | None = None,
+        calibration_source: str = "ground_truth_dsm",
     ) -> str | None:
         """Write float32 heights on the source GeoTIFF grid, when it is valid."""
 
@@ -227,9 +228,15 @@ class ArtifactWriter:
                 dataset.write_mask(valid.astype(np.uint8) * 255)
                 if source.source_tags:
                     dataset.update_tags(**source.source_tags)
+                calibration_tag = {
+                    "ground_truth_dsm": "benchmark_only_affine",
+                    "reference_dem": "reference_dem_affine",
+                    "gcps": "gcp_affine",
+                }.get(calibration_source, "affine")
                 dataset.update_tags(
                     DEPTHWIZARD_OUTPUT="calibrated_predicted_dsm",
-                    DEPTHWIZARD_CALIBRATION="benchmark_only_affine",
+                    DEPTHWIZARD_CALIBRATION=calibration_tag,
+                    DEPTHWIZARD_CALIBRATION_SOURCE=calibration_source,
                 )
             return self.reference(filename)
         except Exception as exc:

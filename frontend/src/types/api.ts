@@ -57,9 +57,22 @@ export interface CalibrationMetadata {
   [key: string]: unknown;
 }
 
+export interface ReferenceSummary {
+  type?: string;
+  source?: string;
+  filename?: string;
+  point_count?: number;
+  calibration_points?: number;
+  holdout_points?: number;
+  coverage?: number;
+  units?: string;
+  [key: string]: string | number | boolean | null | undefined;
+}
+
 export interface ResultUrls {
   original?: string | null;
   depth?: string | null;
+  reference_dem?: string | null;
   ground_truth?: string | null;
   error?: string | null;
 }
@@ -76,6 +89,8 @@ export interface AnalysisResponse {
   geospatial: GeospatialMetadata | null;
   metrics: DepthMetrics | null;
   calibration: CalibrationMetadata | null;
+  reference?: ReferenceSummary | null;
+  reference_summary?: ReferenceSummary | null;
   depth_grid: DepthGrid;
   urls: ResultUrls;
   artifacts: Record<string, string>;

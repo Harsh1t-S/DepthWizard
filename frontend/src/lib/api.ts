@@ -56,12 +56,17 @@ async function readAnalysisResponse(response: Response): Promise<AnalysisRespons
 export async function analyzeRaster(
   image: File,
   dsm: File | null,
+  reference: File | null,
   signal?: AbortSignal,
 ): Promise<AnalysisResponse> {
   const formData = new FormData();
   formData.append("image", image, image.name);
   if (dsm) {
     formData.append("ground_truth_dsm", dsm, dsm.name);
+  }
+  if (reference) {
+    const field = /\.(?:csv|json)$/i.test(reference.name) ? "gcps" : "reference_dem";
+    formData.append(field, reference, reference.name);
   }
 
   try {

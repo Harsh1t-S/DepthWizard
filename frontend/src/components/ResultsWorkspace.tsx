@@ -13,6 +13,7 @@ import {
   Layers3,
   Map,
   Maximize2,
+  Mountain,
   Satellite,
   ShieldCheck,
   Sparkles,
@@ -24,7 +25,7 @@ import type { AnalysisResponse, DepthGrid } from "../types/api";
 
 const TerrainViewer = lazy(() => import("./TerrainViewer"));
 
-type ViewId = "original" | "depth" | "terrain" | "groundTruth" | "error";
+type ViewId = "original" | "depth" | "terrain" | "referenceDem" | "groundTruth" | "error";
 
 interface ViewTab {
   id: ViewId;
@@ -35,6 +36,49 @@ interface ViewTab {
 
 interface ResultsWorkspaceProps {
   result: AnalysisResponse;
+}
+
+type OutputBasis = "relative" | "deployment-dem" | "deployment-gcp" | "benchmark-fit";
+
+function getReferenceSummary(result: AnalysisResponse) {
+  return result.reference ?? result.reference_summary ?? null;
+}
+
+function getOutputBasis(result: AnalysisResponse): OutputBasis {
+  if (result.mode === "reference_dem_calibrated_dsm") return "deployment-dem";
+  if (result.mode === "gcp_calibrated_dsm") return "deployment-gcp";
+  if (result.mode.toLowerCase().includes("benchmark") || (result.calibration && result.urls.ground_truth)) return "benchmark-fit";
+  return "relative";
+}
+
+function hasHoldoutEvaluation(result: AnalysisResponse): boolean {
+  const reference = getReferenceSummary(result) ?? {};
+  const calibration = result.calibration ?? {};
+  const holdoutCount = Number(reference.holdout_points ?? calibration.holdout_points ?? 0);
+  const evaluationScope = String(
+    reference.evaluation_scope ??
+      reference.evaluation ??
+      reference.metrics_scope ??
+      calibration.evaluation_scope ??
+      result.metrics?.evaluation_scope ??
+      result.metrics?.split ??
+      "",
+  ).toLowerCase();
+  const hasHoldoutMetrics = Object.keys(result.metrics ?? {}).some((key) => key.toLowerCase().includes("holdout"));
+  return holdoutCount > 0 || hasHoldoutMetrics || evaluationScope.includes("holdout") || evaluationScope.includes("validation");
+}
+
+function getBasisCopy(basis: OutputBasis): { value: string; detail: string; valueLabel: string } {
+  if (basis === "deployment-dem") {
+    return { value: "Metric estimate", detail: "reference DEM calibrated", valueLabel: "DEM-calibrated metric estimate" };
+  }
+  if (basis === "deployment-gcp") {
+    return { value: "Metric estimate", detail: "sparse GCP calibrated", valueLabel: "GCP-calibrated metric estimate" };
+  }
+  if (basis === "benchmark-fit") {
+    return { value: "Benchmark fit", detail: "full GT · not deployment", valueLabel: "full-GT benchmark-fit height" };
+  }
+  return { value: "RGB-only", detail: "relative · scale-ambiguous", valueLabel: "relative depth" };
 }
 
 function flattenValue(grid: DepthGrid, x: number, y: number): number {
@@ -176,22 +220,87 @@ function formatMetric(key: string, value: number | string | null | undefined): s
   return formatNumber(value, 4);
 }
 
+function getViewerCaption(view: ViewId, basis: OutputBasis): string {
+  if (view === "depth") {
+    if (basis === "deployment-dem" || basis === "deployment-gcp") {
+      return "Values are a reference-calibrated metric estimate; they are not surveyed ground truth.";
+    }
+    if (basis === "benchmark-fit") {
+      return "This height output was fit to the full ground truth for benchmark analysis only.";
+    }
+    return "Brighter values indicate larger model-relative depth values; RGB-only output has no metric scale.";
+  }
+  if (view === "terrain") {
+    if (basis === "deployment-dem" || basis === "deployment-gcp") {
+      return "Surface shape is normalized for display; inspected values retain the reference-calibrated metric estimate.";
+    }
+    if (basis === "benchmark-fit") {
+      return "Surface shape is normalized for display; inspected values are full-GT benchmark-fit heights.";
+    }
+    return "Surface height visualizes normalized relative model output. Use exaggeration for inspection only.";
+  }
+  if (view === "referenceDem") return "DEM/SRTM supplied as a deployment calibration source for metric scale estimation.";
+  if (view === "error") return "Error is computed only against the supplied evaluation reference and must be read in that scope.";
+  if (view === "groundTruth") return "Full aligned ground truth supplied for benchmark fitting and scoring—not deployment calibration.";
+  return "Source imagery used for this analysis job.";
+}
+
 function MetricsPanel({ result }: { result: AnalysisResponse }) {
+  const basis = getOutputBasis(result);
+  const isDeploymentCalibration = basis === "deployment-dem" || basis === "deployment-gcp";
+  const isHoldout = hasHoldoutEvaluation(result);
   const metricEntries = result.metrics
-    ? Object.entries(result.metrics).filter((entry): entry is [string, string | number] => typeof entry[1] === "number" || typeof entry[1] === "string")
+    ? Object.entries(result.metrics).filter(
+        (entry): entry is [string, string | number] =>
+          entry[0] !== "evaluation_scope" && (typeof entry[1] === "number" || typeof entry[1] === "string"),
+      )
     : [];
   const calibrationEntries = result.calibration
     ? Object.entries(result.calibration).filter(([, value]) => value !== null && value !== undefined && typeof value !== "object")
     : [];
+  const reference = getReferenceSummary(result);
+  const referenceEntries = reference
+    ? Object.entries(reference).filter(([, value]) => value !== null && value !== undefined && typeof value !== "object")
+    : [];
+
+  const eyebrow = isHoldout
+    ? "Holdout evaluation"
+    : isDeploymentCalibration
+      ? "Deployment calibration"
+      : basis === "benchmark-fit"
+        ? "Full-GT benchmark fit"
+        : "Reference evaluation";
+  const heading = isHoldout
+    ? "Reference-calibrated holdout evaluation"
+    : isDeploymentCalibration
+      ? "Reference calibration / metric estimate"
+      : "Benchmark fit / feasibility evaluation";
+  const chipLabel = basis === "deployment-dem"
+    ? "DEM-calibrated"
+    : basis === "deployment-gcp"
+      ? "GCP-calibrated"
+      : basis === "benchmark-fit"
+        ? "Full-GT fit"
+        : null;
+
+  const disclaimer = result.demo
+    ? "Metrics describe only this bundled synthetic fixture; they are not a real-world benchmark result."
+    : isHoldout
+      ? "Metrics use withheld reference samples and evaluate this scene only; they do not certify accuracy on other terrain or sensors."
+      : isDeploymentCalibration
+        ? "Any metrics shown are calibration-fit diagnostics, not independent holdout accuracy. The output is a reference-calibrated estimate, not surveyed ground truth."
+        : basis === "benchmark-fit"
+          ? "Metrics measure an in-sample fit to the full aligned ground truth. This is benchmark-only evidence, not deployment performance or holdout accuracy."
+          : "RGB-only output is relative and scale-ambiguous. No metric-elevation or general accuracy claim is implied.";
 
   return (
     <section className="details-card details-card--metrics">
       <div className="details-card__heading">
         <div>
-          <span className="details-card__eyebrow">Reference evaluation</span>
-          <h3>Benchmark calibration / feasibility evaluation</h3>
+          <span className="details-card__eyebrow">{eyebrow}</span>
+          <h3>{heading}</h3>
         </div>
-        {result.calibration ? <span className="calibrated-chip"><Check size={12} /> Reference-aligned</span> : null}
+        {chipLabel ? <span className="calibrated-chip"><Check size={12} /> {chipLabel}</span> : null}
       </div>
 
       {metricEntries.length > 0 ? (
@@ -207,11 +316,26 @@ function MetricsPanel({ result }: { result: AnalysisResponse }) {
         <div className="no-reference">
           <Gauge size={21} />
           <div>
-            <strong>No reference metrics for this scene</strong>
-            <p>Prediction remains a relative depth field until evaluated or aligned against a compatible DSM.</p>
+            <strong>{isDeploymentCalibration ? "Calibration applied; no evaluation metrics returned" : "No reference metrics for this scene"}</strong>
+            <p>
+              {isDeploymentCalibration
+                ? "The output is a reference-calibrated metric estimate, but it has not been independently scored."
+                : "Prediction remains a relative depth field until evaluated or aligned against a compatible deployment reference."}
+            </p>
           </div>
         </div>
       )}
+
+      {referenceEntries.length > 0 ? (
+        <div className="reference-summary" role="group" aria-label="Calibration reference summary">
+          <span>Reference</span>
+          <div>
+            {referenceEntries.slice(0, 6).map(([key, value]) => (
+              <span key={key}><em>{humanizeKey(key)}</em><strong>{formatNumber(value)}</strong></span>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {calibrationEntries.length > 0 ? (
         <div className="calibration-strip" role="group" aria-label="Calibration coefficients" tabIndex={0}>
@@ -223,9 +347,7 @@ function MetricsPanel({ result }: { result: AnalysisResponse }) {
       ) : null}
 
       <p className="evaluation-disclaimer">
-        {result.demo
-          ? "Metrics describe only this bundled synthetic fixture; they are not a real-world benchmark result."
-          : "Metrics describe this supplied benchmark/reference pair. They do not certify general accuracy or convert uncalibrated output into absolute elevation."}
+        {disclaimer}
       </p>
     </section>
   );
@@ -243,6 +365,10 @@ function MetadataPanel({ result }: { result: AnalysisResponse }) {
   const boundsText = extractBoundsText(result);
   const crs = result.geospatial?.crs ?? (result.geospatial?.epsg ? `EPSG:${result.geospatial.epsg}` : null);
   const isGeoreferenced = Boolean(crs && result.geospatial?.valid_for_dsm_export === true);
+  const basis = getOutputBasis(result);
+  const basisCopy = getBasisCopy(basis);
+  const reference = getReferenceSummary(result);
+  const referenceLabel = reference?.filename ?? reference?.source ?? reference?.type;
 
   return (
     <section className="details-card details-card--metadata">
@@ -257,7 +383,8 @@ function MetadataPanel({ result }: { result: AnalysisResponse }) {
         <div><dt>Dimensions</dt><dd>{result.input.width.toLocaleString()} × {result.input.height.toLocaleString()} px</dd></div>
         <div><dt>CRS</dt><dd>{crs ? String(crs) : "Not embedded"}</dd></div>
         {isGeoreferenced && boundsText ? <div><dt>Bounds</dt><dd className="metadata-list__small">{boundsText}</dd></div> : null}
-        <div><dt>Output basis</dt><dd>{result.calibration ? "Benchmark-calibrated height" : "Relative depth"}</dd></div>
+        <div><dt>Output basis</dt><dd>{basisCopy.valueLabel}</dd></div>
+        {referenceLabel ? <div><dt>Calibration source</dt><dd title={String(referenceLabel)}>{String(referenceLabel)}</dd></div> : null}
       </dl>
       {!isGeoreferenced ? (
         <div className="metadata-note"><Info size={14} /><span>No georeferencing was preserved. Point inspection uses image pixels.</span></div>
@@ -297,24 +424,28 @@ function ArtifactPanel({ result }: { result: AnalysisResponse }) {
 }
 
 export function ResultsWorkspace({ result }: ResultsWorkspaceProps) {
+  const basis = getOutputBasis(result);
+  const basisCopy = getBasisCopy(basis);
   const resolvedUrls = useMemo(
     () => ({
       original: resolveApiUrl(result.urls.original),
       depth: resolveApiUrl(result.urls.depth),
+      referenceDem: resolveApiUrl(result.urls.reference_dem),
       groundTruth: resolveApiUrl(result.urls.ground_truth),
       error: resolveApiUrl(result.urls.error),
     }),
-    [result.urls.depth, result.urls.error, result.urls.ground_truth, result.urls.original],
+    [result.urls.depth, result.urls.error, result.urls.ground_truth, result.urls.original, result.urls.reference_dem],
   );
   const tabs = useMemo<ViewTab[]>(() => {
     const nextTabs: ViewTab[] = [];
     if (resolvedUrls.original) nextTabs.push({ id: "original", label: "Original", shortLabel: "Original", icon: ImageIcon });
     nextTabs.push({ id: "depth", label: "Predicted Depth", shortLabel: "Depth", icon: Layers3 });
     nextTabs.push({ id: "terrain", label: "3D Reconstruction", shortLabel: "3D", icon: Box });
+    if (resolvedUrls.referenceDem) nextTabs.push({ id: "referenceDem", label: "Reference DEM", shortLabel: "Ref DEM", icon: Mountain });
     if (resolvedUrls.groundTruth) nextTabs.push({ id: "groundTruth", label: "Ground Truth", shortLabel: "Reference", icon: Satellite });
     if (resolvedUrls.error) nextTabs.push({ id: "error", label: "Error Map", shortLabel: "Error", icon: AlertCircle });
     return nextTabs;
-  }, [resolvedUrls.error, resolvedUrls.groundTruth, resolvedUrls.original]);
+  }, [resolvedUrls.error, resolvedUrls.groundTruth, resolvedUrls.original, resolvedUrls.referenceDem]);
   const [activeView, setActiveView] = useState<ViewId>("depth");
   const [copied, setCopied] = useState(false);
 
@@ -336,6 +467,7 @@ export function ResultsWorkspace({ result }: ResultsWorkspaceProps) {
   const imageAlt: Record<Exclude<ViewId, "terrain">, string> = {
     original: `Original satellite image ${result.input.filename}`,
     depth: "Predicted relative depth map",
+    referenceDem: "Reference DEM or SRTM calibration raster",
     groundTruth: "Ground-truth DSM visualization",
     error: "Prediction error map against the reference DSM",
   };
@@ -362,7 +494,7 @@ export function ResultsWorkspace({ result }: ResultsWorkspaceProps) {
         <DataTile icon={ImageIcon} label="Input raster" value={`${result.input.width.toLocaleString()} × ${result.input.height.toLocaleString()}`} detail="pixels" />
         <DataTile icon={Clock3} label="Processing" value={formatDuration(result.processing_time_seconds)} detail="end to end" />
         <DataTile icon={Cpu} label="Compute" value={result.device || "Unknown"} detail={result.model || "model not reported"} />
-        <DataTile icon={Gauge} label="Depth basis" value={result.calibration ? "Calibrated" : "Relative"} detail={result.calibration ? "reference-aligned" : "scale-ambiguous"} />
+        <DataTile icon={Gauge} label="Output basis" value={basisCopy.value} detail={basisCopy.detail} />
       </div>
 
       <section className="viewer-card" aria-label="Analysis visualizations">
@@ -398,7 +530,7 @@ export function ResultsWorkspace({ result }: ResultsWorkspaceProps) {
                 geospatial={result.geospatial}
                 inputWidth={result.input.width}
                 inputHeight={result.input.height}
-                valueLabel={result.calibration ? "reference-aligned height" : "relative depth"}
+                valueLabel={basisCopy.valueLabel}
               />
             </Suspense>
           ) : activeView === "depth" ? (
@@ -407,6 +539,8 @@ export function ResultsWorkspace({ result }: ResultsWorkspaceProps) {
             <RasterView src={resolvedUrls.original} alt={imageAlt.original} />
           ) : activeView === "groundTruth" ? (
             <RasterView src={resolvedUrls.groundTruth} alt={imageAlt.groundTruth} />
+          ) : activeView === "referenceDem" ? (
+            <RasterView src={resolvedUrls.referenceDem} alt={imageAlt.referenceDem} />
           ) : (
             <RasterView src={resolvedUrls.error} alt={imageAlt.error} />
           )}
@@ -414,19 +548,7 @@ export function ResultsWorkspace({ result }: ResultsWorkspaceProps) {
 
         <div className="viewer-caption">
           <span className="viewer-caption__status"><span /> {activeView === "terrain" ? "Interactive surface" : "Rendered artifact"}</span>
-          <p>
-            {activeView === "depth"
-              ? "Brighter values indicate larger model-relative depth values; they are not metres without reference calibration."
-              : activeView === "terrain"
-                ? result.calibration
-                  ? "Surface shape is normalized for display; inspected values are benchmark reference-aligned heights."
-                  : "Surface height visualizes normalized relative model output. Use exaggeration for inspection only."
-                : activeView === "error"
-                  ? "Error is computed only against the supplied reference scene."
-                  : activeView === "groundTruth"
-                    ? "Reference data supplied for benchmark evaluation and calibration."
-                    : "Source imagery used for this analysis job."}
-          </p>
+          <p>{getViewerCaption(activeView, basis)}</p>
         </div>
       </section>
 

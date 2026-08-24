@@ -125,6 +125,9 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .optional-input__heading > div { display: flex; align-items: center; gap: 7px; color: #cbd8dd; font-size: 11px; font-weight: 600; }
 .optional-input p { color: var(--faint); font-size: 9px; line-height: 1.55; margin: 0 0 10px; }
 .optional-chip { color: #8da0a8; border: 1px solid var(--line-bright); padding: 2px 5px; font: 400 8px var(--mono); text-transform: uppercase; }
+.optional-chip--calibration { color: #7dd9be; border-color: #285b50; background: #0c2824; }
+.optional-chip--benchmark { color: #dec17f; border-color: #564827; background: #272113; }
+.input-formats { display: block; margin-top: 7px; color: #59727c; font: 400 7px var(--mono); letter-spacing: .025em; }
 .secondary-button, .demo-button, .primary-button, .text-button { border: 0; cursor: pointer; }
 .secondary-button--full { width: 100%; height: 34px; display: flex; align-items: center; justify-content: center; gap: 7px; background: #101f28; border: 1px solid #253b46; font-size: 10px; color: #aebfc6; }
 .secondary-button:hover, .demo-button:hover { background: #142833; color: #e0ecef; }
@@ -293,6 +296,12 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .calibration-strip > div { display: flex; gap: 4px; align-items: baseline; white-space: nowrap; }
 .calibration-strip em { color: #8499a2; font-size: 7px; font-style: normal; }
 .calibration-strip strong { color: #a8bbc2; font: 400 7px var(--mono); }
+.reference-summary { margin-top: 9px; padding: 8px; display: flex; gap: 10px; align-items: flex-start; background: #0b1921; border-left: 2px solid #347c73; }
+.reference-summary > span { flex: 0 0 auto; color: #79bdb1; font: 500 7px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+.reference-summary > div { min-width: 0; display: flex; flex-wrap: wrap; gap: 5px 11px; }
+.reference-summary > div > span { display: flex; gap: 4px; align-items: baseline; }
+.reference-summary em { color: #6f8790; font-size: 7px; font-style: normal; }
+.reference-summary strong { color: #b7c9ce; font: 400 7px var(--mono); }
 .evaluation-disclaimer { color: #8499a2; font-size: 7.5px; line-height: 1.4; margin: 10px 0 0; }
 .metadata-list { margin: 0; display: grid; }
 .metadata-list > div { display: flex; justify-content: space-between; gap: 9px; padding: 7px 0; border-bottom: 1px solid var(--line); }

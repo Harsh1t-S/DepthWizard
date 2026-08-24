@@ -1,4 +1,4 @@
-"""Image and DSM decoding with optional GeoTIFF metadata preservation."""
+"""Image and elevation-raster decoding with optional geospatial alignment."""
 
 from __future__ import annotations
 
@@ -190,11 +190,16 @@ def read_image_bytes(data: bytes, filename: str) -> ImageRaster:
     return ImageRaster(filename=filename, rgb=rgb)
 
 
-def read_ground_truth_bytes(data: bytes, filename: str) -> GroundTruthRaster:
-    """Decode a single-band DSM from GeoTIFF, NumPy, or a regular image."""
+def read_elevation_bytes(
+    data: bytes,
+    filename: str,
+    *,
+    label: str = "Elevation raster",
+) -> GroundTruthRaster:
+    """Decode a single-band elevation raster from GeoTIFF, NumPy, or an image."""
 
     if not data:
-        raise ValueError("Uploaded ground-truth DSM is empty")
+        raise ValueError(f"Uploaded {label} is empty")
     suffix = Path(filename).suffix.lower()
 
     if _looks_like_tiff(data, filename):
@@ -203,9 +208,9 @@ def read_ground_truth_bytes(data: bytes, filename: str) -> GroundTruthRaster:
 
             with MemoryFile(data) as memory_file, memory_file.open() as dataset:
                 if dataset.count < 1:
-                    raise ValueError("Ground-truth GeoTIFF contains no raster band")
+                    raise ValueError(f"{label} GeoTIFF contains no raster band")
                 _enforce_decoded_size(
-                    dataset.width, dataset.height, "Ground-truth GeoTIFF"
+                    dataset.width, dataset.height, f"{label} GeoTIFF"
                 )
                 values = dataset.read(1).astype(np.float32)
                 valid = dataset.read_masks(1) > 0
@@ -227,19 +232,17 @@ def read_ground_truth_bytes(data: bytes, filename: str) -> GroundTruthRaster:
         except ValueError:
             raise
         except Exception as exc:
-            raise ValueError(
-                f"Could not decode ground-truth GeoTIFF {filename!r}: {exc}"
-            ) from exc
+            raise ValueError(f"Could not decode {label} GeoTIFF {filename!r}: {exc}") from exc
 
     if suffix == ".npy":
         try:
             values = np.load(io.BytesIO(data), allow_pickle=False)
         except Exception as exc:
-            raise ValueError(f"Could not decode NumPy DSM {filename!r}: {exc}") from exc
+            raise ValueError(f"Could not decode NumPy {label} {filename!r}: {exc}") from exc
         values = np.squeeze(values)
         if values.ndim != 2:
-            raise ValueError("A NumPy ground-truth DSM must be a two-dimensional array")
-        _enforce_decoded_size(values.shape[1], values.shape[0], "NumPy DSM")
+            raise ValueError(f"A NumPy {label} must be a two-dimensional array")
+        _enforce_decoded_size(values.shape[1], values.shape[0], f"NumPy {label}")
         values = values.astype(np.float32)
         return GroundTruthRaster(
             filename=filename,
@@ -249,15 +252,21 @@ def read_ground_truth_bytes(data: bytes, filename: str) -> GroundTruthRaster:
 
     try:
         with Image.open(io.BytesIO(data)) as opened:
-            _enforce_decoded_size(opened.width, opened.height, "Ground-truth image")
+            _enforce_decoded_size(opened.width, opened.height, f"{label} image")
             values = np.asarray(opened.convert("F"), dtype=np.float32).copy()
     except (Image.DecompressionBombError, UnidentifiedImageError, OSError, ValueError) as exc:
-        raise ValueError(f"Could not decode ground-truth DSM {filename!r}: {exc}") from exc
+        raise ValueError(f"Could not decode {label} {filename!r}: {exc}") from exc
     return GroundTruthRaster(
         filename=filename,
         values=values,
         valid_mask=np.isfinite(values),
     )
+
+
+def read_ground_truth_bytes(data: bytes, filename: str) -> GroundTruthRaster:
+    """Compatibility wrapper for a benchmark/evaluation DSM upload."""
+
+    return read_elevation_bytes(data, filename, label="ground-truth DSM")
 
 
 def _transforms_match(first: Any, second: Any) -> bool:
@@ -273,29 +282,31 @@ def _transforms_match(first: Any, second: Any) -> bool:
     )
 
 
-def align_ground_truth(
-    ground_truth: GroundTruthRaster,
+def align_elevation_raster(
+    elevation: GroundTruthRaster,
     source: ImageRaster,
+    *,
+    label: str = "Elevation raster",
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    """Align a DSM to the source pixel grid and retain a strict validity mask."""
+    """Align an elevation raster to the source grid with generic source labels."""
 
     target_shape = (source.height, source.width)
     notices: list[str] = []
-    same_shape = ground_truth.values.shape == target_shape
+    same_shape = elevation.values.shape == target_shape
 
     can_georeference = (
-        ground_truth.crs is not None
-        and ground_truth.transform is not None
+        elevation.crs is not None
+        and elevation.transform is not None
         and source.crs is not None
         and source.transform is not None
     )
-    same_crs = can_georeference and ground_truth.crs == source.crs
-    same_transform = _transforms_match(ground_truth.transform, source.transform)
+    same_crs = can_georeference and elevation.crs == source.crs
+    same_transform = _transforms_match(elevation.transform, source.transform)
 
     if same_shape and same_crs and same_transform:
         return (
-            ground_truth.values.astype(np.float32, copy=False),
-            ground_truth.valid_mask.astype(bool, copy=False),
+            elevation.values.astype(np.float32, copy=False),
+            elevation.valid_mask.astype(bool, copy=False),
             notices,
         )
 
@@ -303,14 +314,14 @@ def align_ground_truth(
         try:
             from rasterio.warp import Resampling, reproject
 
-            source_values = ground_truth.values.astype(np.float32, copy=True)
-            source_values[~ground_truth.valid_mask] = np.nan
+            source_values = elevation.values.astype(np.float32, copy=True)
+            source_values[~elevation.valid_mask] = np.nan
             aligned = np.full(target_shape, np.nan, dtype=np.float32)
             reproject(
                 source=source_values,
                 destination=aligned,
-                src_transform=ground_truth.transform,
-                src_crs=ground_truth.crs,
+                src_transform=elevation.transform,
+                src_crs=elevation.crs,
                 src_nodata=np.nan,
                 dst_transform=source.transform,
                 dst_crs=source.crs,
@@ -319,10 +330,10 @@ def align_ground_truth(
             )
             aligned_mask = np.zeros(target_shape, dtype=np.uint8)
             reproject(
-                source=ground_truth.valid_mask.astype(np.uint8),
+                source=elevation.valid_mask.astype(np.uint8),
                 destination=aligned_mask,
-                src_transform=ground_truth.transform,
-                src_crs=ground_truth.crs,
+                src_transform=elevation.transform,
+                src_crs=elevation.crs,
                 src_nodata=0,
                 dst_transform=source.transform,
                 dst_crs=source.crs,
@@ -331,31 +342,31 @@ def align_ground_truth(
             )
             valid = (aligned_mask > 0) & np.isfinite(aligned)
             notices.append(
-                "Ground-truth DSM was geospatially reprojected/resampled to the "
+                f"{label} was geospatially reprojected/resampled to the "
                 "source image grid because its CRS, transform, or dimensions differed."
             )
             return aligned, valid, notices
         except Exception as exc:
-            raise ValueError(f"Could not align the georeferenced DSM: {exc}") from exc
+            raise ValueError(f"Could not align the georeferenced {label}: {exc}") from exc
 
     if same_shape:
-        if ground_truth.crs is not None or source.crs is not None:
+        if elevation.crs is not None or source.crs is not None:
             notices.append(
-                "Ground truth and source have matching dimensions but incomplete "
+                f"{label} and source have matching dimensions but incomplete "
                 "georeferencing; pixel-for-pixel alignment was assumed."
             )
         return (
-            ground_truth.values.astype(np.float32, copy=False),
-            ground_truth.valid_mask.astype(bool, copy=False),
+            elevation.values.astype(np.float32, copy=False),
+            elevation.valid_mask.astype(bool, copy=False),
             notices,
         )
 
     # Numeric resizing is a last resort when one or both rasters lack a usable
     # CRS/transform.  The accompanying notice is returned in the API response.
-    values_for_resize = ground_truth.values.astype(np.float32, copy=True)
-    valid_values = values_for_resize[ground_truth.valid_mask]
+    values_for_resize = elevation.values.astype(np.float32, copy=True)
+    valid_values = values_for_resize[elevation.valid_mask]
     fill = float(np.median(valid_values)) if valid_values.size else 0.0
-    values_for_resize[~ground_truth.valid_mask] = fill
+    values_for_resize[~elevation.valid_mask] = fill
     aligned = np.asarray(
         Image.fromarray(values_for_resize, mode="F").resize(
             (source.width, source.height), Image.Resampling.BILINEAR
@@ -363,15 +374,24 @@ def align_ground_truth(
         dtype=np.float32,
     )
     valid = np.asarray(
-        Image.fromarray(ground_truth.valid_mask.astype(np.uint8) * 255).resize(
+        Image.fromarray(elevation.valid_mask.astype(np.uint8) * 255).resize(
             (source.width, source.height), Image.Resampling.NEAREST
         )
     ) > 0
     valid &= np.isfinite(aligned)
     notices.append(
-        f"Ground-truth DSM was resized from {ground_truth.width}x{ground_truth.height} "
+        f"{label} was resized from {elevation.width}x{elevation.height} "
         f"to {source.width}x{source.height} because usable geospatial alignment "
         "metadata was unavailable. Bilinear values and a nearest-neighbor validity "
         "mask were used."
     )
     return aligned, valid, notices
+
+
+def align_ground_truth(
+    ground_truth: GroundTruthRaster,
+    source: ImageRaster,
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Compatibility wrapper for benchmark/evaluation DSM alignment."""
+
+    return align_elevation_raster(ground_truth, source, label="Ground-truth DSM")
