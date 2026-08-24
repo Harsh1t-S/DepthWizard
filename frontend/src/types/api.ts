@@ -4,6 +4,7 @@ export interface DepthGrid {
   width: number;
   height: number;
   values: DepthValues;
+  valid_mask?: boolean[] | boolean[][];
 }
 
 export interface InputMetadata {

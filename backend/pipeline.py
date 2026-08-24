@@ -106,7 +106,8 @@ def analyze_bytes(
     )
 
     notices = [
-        "Live output from Depth Anything V2 is relative monocular depth, not metric elevation."
+        f"Live output from {prediction_info.get('model_id', 'the configured model')} "
+        "is relative monocular depth, not metric elevation."
     ]
     inference_width = int(prediction_info.get("inference_width", source.width))
     inference_height = int(prediction_info.get("inference_height", source.height))
@@ -145,7 +146,10 @@ def analyze_bytes(
     artifacts["depth_png"] = writer.write_preview(
         "depth.png", depth, source.valid_mask
     )
-    artifacts["depth_npy"] = writer.write_npy("depth.npy", depth)
+    depth_for_export = depth.copy()
+    if source.valid_mask is not None:
+        depth_for_export[~source.valid_mask] = np.nan
+    artifacts["depth_npy"] = writer.write_npy("depth.npy", depth_for_export)
 
     urls: dict[str, str | None] = {
         "original": artifacts["original_png"],
@@ -188,7 +192,7 @@ def analyze_bytes(
 
     if evaluation is not None:
         mesh_heights = evaluation.calibrated_height
-        mesh_mask = source.valid_mask
+        mesh_mask = evaluation.valid_mask
         mode = "benchmark_calibrated_dsm"
     else:
         # A normalized grid is more stable for an uncalibrated 3-D preview than

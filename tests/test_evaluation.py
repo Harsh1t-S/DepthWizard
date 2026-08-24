@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from PIL import Image
 
+from backend.artifacts import make_mesh_grid
 from backend.evaluation import evaluate_relative_depth
-from backend.raster_io import GroundTruthRaster, ImageRaster, align_ground_truth
+from backend.raster_io import (
+    GroundTruthRaster,
+    ImageRaster,
+    align_ground_truth,
+    read_image_bytes,
+)
 
 
 def test_negative_depth_orientation_and_affine_calibration() -> None:
@@ -43,3 +50,24 @@ def test_ground_truth_resize_is_explicit_and_masks_nodata() -> None:
     assert aligned_valid.shape == (8, 12)
     assert not aligned_valid[0, 0]
     assert any("resized from 6x4 to 12x8" in notice for notice in notices)
+
+
+def test_mesh_grid_preserves_invalid_regions() -> None:
+    heights = np.arange(600, dtype=np.float32).reshape(20, 30)
+    valid = np.ones(heights.shape, dtype=bool)
+    valid[:5, :8] = False
+
+    grid = make_mesh_grid(heights, valid_mask=valid)
+
+    assert len(grid["valid_mask"]) == grid["width"] * grid["height"]
+    assert any(value is False for value in grid["valid_mask"])
+    assert any(value is True for value in grid["valid_mask"])
+
+
+def test_pillow_decompression_bomb_becomes_value_error(monkeypatch) -> None:
+    def reject_image(*_args, **_kwargs):
+        raise Image.DecompressionBombError("controlled oversized image")
+
+    monkeypatch.setattr(Image, "open", reject_image)
+    with pytest.raises(ValueError, match="Could not decode image"):
+        read_image_bytes(b"not-a-tiff", "oversized.png")

@@ -1,8 +1,6 @@
-@import url("https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap");
-
 :root {
   color-scheme: dark;
-  font-family: "Manrope", "Segoe UI", sans-serif;
+  font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
   color: #dfeaf0;
   background: #050b10;
   font-synthesis: none;
@@ -14,7 +12,7 @@
   --line: #1d303b;
   --line-bright: #2b4653;
   --muted: #8296a1;
-  --faint: #5b707b;
+  --faint: #8499a2;
   --text: #dfeaf0;
   --strong: #f4f9fb;
   --cyan: #50d7df;
@@ -22,7 +20,7 @@
   --green: #70daa1;
   --amber: #e6bd6c;
   --red: #ff8e86;
-  --mono: "DM Mono", "Cascadia Mono", monospace;
+  --mono: "Cascadia Mono", "Consolas", monospace;
 }
 
 * { box-sizing: border-box; }
@@ -293,12 +291,12 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .calibration-strip { display: flex; gap: 10px; align-items: center; margin-top: 9px; overflow-x: auto; }
 .calibration-strip > span { color: #738891; font: 500 7px var(--mono); text-transform: uppercase; }
 .calibration-strip > div { display: flex; gap: 4px; align-items: baseline; white-space: nowrap; }
-.calibration-strip em { color: #536c76; font-size: 7px; font-style: normal; }
+.calibration-strip em { color: #8499a2; font-size: 7px; font-style: normal; }
 .calibration-strip strong { color: #a8bbc2; font: 400 7px var(--mono); }
-.evaluation-disclaimer { color: #607680; font-size: 7.5px; line-height: 1.4; margin: 10px 0 0; }
+.evaluation-disclaimer { color: #8499a2; font-size: 7.5px; line-height: 1.4; margin: 10px 0 0; }
 .metadata-list { margin: 0; display: grid; }
 .metadata-list > div { display: flex; justify-content: space-between; gap: 9px; padding: 7px 0; border-bottom: 1px solid var(--line); }
-.metadata-list dt { color: #647b85; font-size: 8px; }
+.metadata-list dt { color: #8499a2; font-size: 8px; }
 .metadata-list dd { margin: 0; color: #b5c5cb; font: 400 8px var(--mono); text-align: right; }
 .metadata-list__small { font-size: 6.5px !important; line-height: 1.4; }
 .metadata-note { display: flex; gap: 6px; margin-top: 9px; color: #68808a; font-size: 7.5px; line-height: 1.4; }

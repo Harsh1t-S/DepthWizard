@@ -185,7 +185,7 @@ def read_image_bytes(data: bytes, filename: str) -> ImageRaster:
             _enforce_decoded_size(opened.width, opened.height, "Image")
             image = ImageOps.exif_transpose(opened).convert("RGB")
             rgb = np.asarray(image, dtype=np.uint8).copy()
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+    except (Image.DecompressionBombError, UnidentifiedImageError, OSError, ValueError) as exc:
         raise ValueError(f"Could not decode image {filename!r}: {exc}") from exc
     return ImageRaster(filename=filename, rgb=rgb)
 
@@ -251,7 +251,7 @@ def read_ground_truth_bytes(data: bytes, filename: str) -> GroundTruthRaster:
         with Image.open(io.BytesIO(data)) as opened:
             _enforce_decoded_size(opened.width, opened.height, "Ground-truth image")
             values = np.asarray(opened.convert("F"), dtype=np.float32).copy()
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+    except (Image.DecompressionBombError, UnidentifiedImageError, OSError, ValueError) as exc:
         raise ValueError(f"Could not decode ground-truth DSM {filename!r}: {exc}") from exc
     return GroundTruthRaster(
         filename=filename,

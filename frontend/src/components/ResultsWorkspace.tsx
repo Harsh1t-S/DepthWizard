@@ -214,7 +214,7 @@ function MetricsPanel({ result }: { result: AnalysisResponse }) {
       )}
 
       {calibrationEntries.length > 0 ? (
-        <div className="calibration-strip">
+        <div className="calibration-strip" role="group" aria-label="Calibration coefficients" tabIndex={0}>
           <span>Calibration</span>
           {calibrationEntries.slice(0, 5).map(([key, value]) => (
             <div key={key}><em>{humanizeKey(key)}</em><strong>{formatNumber(value)}</strong></div>
@@ -223,7 +223,9 @@ function MetricsPanel({ result }: { result: AnalysisResponse }) {
       ) : null}
 
       <p className="evaluation-disclaimer">
-        Metrics describe this supplied benchmark/reference pair. They do not certify general accuracy or convert uncalibrated output into absolute elevation.
+        {result.demo
+          ? "Metrics describe only this bundled synthetic fixture; they are not a real-world benchmark result."
+          : "Metrics describe this supplied benchmark/reference pair. They do not certify general accuracy or convert uncalibrated output into absolute elevation."}
       </p>
     </section>
   );
@@ -255,7 +257,7 @@ function MetadataPanel({ result }: { result: AnalysisResponse }) {
         <div><dt>Dimensions</dt><dd>{result.input.width.toLocaleString()} × {result.input.height.toLocaleString()} px</dd></div>
         <div><dt>CRS</dt><dd>{crs ? String(crs) : "Not embedded"}</dd></div>
         {isGeoreferenced && boundsText ? <div><dt>Bounds</dt><dd className="metadata-list__small">{boundsText}</dd></div> : null}
-        <div><dt>Output basis</dt><dd>{result.calibration ? "Reference-aligned relative depth" : "Relative depth"}</dd></div>
+        <div><dt>Output basis</dt><dd>{result.calibration ? "Benchmark-calibrated height" : "Relative depth"}</dd></div>
       </dl>
       {!isGeoreferenced ? (
         <div className="metadata-note"><Info size={14} /><span>No georeferencing was preserved. Point inspection uses image pixels.</span></div>
@@ -356,7 +358,7 @@ export function ResultsWorkspace({ result }: ResultsWorkspaceProps) {
         </button>
       </div>
 
-      <div className="run-summary" aria-label="Run summary">
+      <div className="run-summary" role="group" aria-label="Run summary">
         <DataTile icon={ImageIcon} label="Input raster" value={`${result.input.width.toLocaleString()} × ${result.input.height.toLocaleString()}`} detail="pixels" />
         <DataTile icon={Clock3} label="Processing" value={formatDuration(result.processing_time_seconds)} detail="end to end" />
         <DataTile icon={Cpu} label="Compute" value={result.device || "Unknown"} detail={result.model || "model not reported"} />
@@ -429,9 +431,9 @@ export function ResultsWorkspace({ result }: ResultsWorkspaceProps) {
       </section>
 
       {result.notices?.length ? (
-        <div className="notice-list" aria-label="Analysis notices">
+        <div className="notice-list" role="list" aria-label="Analysis notices">
           {result.notices.map((notice, index) => (
-            <div key={`${index}-${notice}`}><Info size={15} /><span>{notice}</span></div>
+            <div role="listitem" key={`${index}-${notice}`}><Info size={15} /><span>{notice}</span></div>
           ))}
         </div>
       ) : null}

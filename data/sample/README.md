@@ -15,7 +15,7 @@ For benchmark-only evaluation, add the image's pixel-aligned ground-truth DSM as
 `GROUND_TRUTH_DSM.tif`:
 
 ```powershell
-python scripts/evaluate_depth.py data/sample/IMAGE.tif data/sample/GROUND_TRUTH_DSM.tif --output-dir outputs/evaluation
+python scripts/evaluate_depth.py --image data/sample/IMAGE.tif --ground-truth data/sample/GROUND_TRUTH_DSM.tif --output-dir outputs/evaluation
 ```
 
 The second command uses the supplied ground truth to fit scale and shift before

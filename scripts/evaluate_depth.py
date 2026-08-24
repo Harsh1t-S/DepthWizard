@@ -24,8 +24,19 @@ def parse_args() -> argparse.Namespace:
             "affine benchmark calibration against a DSM."
         )
     )
-    parser.add_argument("image", type=Path, help="RGB image or source GeoTIFF")
-    parser.add_argument("ground_truth_dsm", type=Path, help="DSM GeoTIFF, NPY, or image")
+    parser.add_argument(
+        "--image",
+        type=Path,
+        required=True,
+        help="RGB image or source GeoTIFF",
+    )
+    parser.add_argument(
+        "--ground-truth",
+        dest="ground_truth_dsm",
+        type=Path,
+        required=True,
+        help="Aligned DSM GeoTIFF, NPY, or image",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,

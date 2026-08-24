@@ -27,6 +27,19 @@ from .pipeline import analyze_bytes
 API_VERSION = "0.1.0"
 
 
+def _cors_origins() -> list[str]:
+    configured = os.getenv("DEPTHWIZARD_CORS_ORIGINS", "")
+    if configured.strip():
+        origins = [origin.strip().rstrip("/") for origin in configured.split(",")]
+        return [origin for origin in origins if origin]
+    return [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://localhost:5173",
+        "https://127.0.0.1:5173",
+    ]
+
+
 def _max_upload_bytes() -> int:
     raw = os.getenv("DEPTHWIZARD_MAX_UPLOAD_MB", "64")
     try:
@@ -69,12 +82,7 @@ def create_app(artifact_root: Path | None = None) -> FastAPI:
     application.state.artifact_root = root
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "https://localhost:5173",
-            "https://127.0.0.1:5173",
-        ],
+        allow_origins=_cors_origins(),
         allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
         allow_credentials=True,
         allow_methods=["GET", "POST", "OPTIONS"],

@@ -11,7 +11,7 @@ export function AppHeader() {
 
   return (
     <header className="app-header">
-      <div className="brand-lockup" aria-label="DepthWizard home">
+      <div className="brand-lockup" role="group" aria-label="DepthWizard home">
         <div className="brand-mark" aria-hidden="true">
           <CircleDotDashed size={21} strokeWidth={1.8} />
           <span className="brand-mark__scan" />
@@ -22,7 +22,7 @@ export function AppHeader() {
         </div>
       </div>
 
-      <div className="mission-label" aria-label="Project attribution">
+      <div className="mission-label" role="group" aria-label="Project attribution">
         <span>SIH26175</span>
         <span className="mission-label__divider" />
         <span>ISRO</span>

@@ -15,6 +15,11 @@ calibration and error report.
 
 No accuracy result is bundled or claimed by this repository.
 
+![DepthWizard interactive 3D synthetic demo](docs/depthwizard-demo.png)
+
+_Bundled precomputed synthetic demonstration fixture — not live model output or
+a real-world benchmark result. Live upload analysis uses the local model._
+
 ## Architecture
 
 ```text
@@ -67,6 +72,9 @@ Set-ExecutionPolicy -Scope Process Bypass
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 
+# RTX laptop (current official CUDA 13.0 wheel; use PyTorch's selector if newer):
+python -m pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu130
+
 Set-Location frontend
 npm install
 Set-Location ..
@@ -74,6 +82,9 @@ Set-Location ..
 
 If PyTorch reports `CUDA: False` on an NVIDIA system, install the appropriate
 CUDA build of PyTorch for the installed driver, then repeat the check above.
+The `cu130` command shown above matches the current wheels and this prototype's
+tested RTX 4050 driver; consult PyTorch's official install selector for older
+drivers or future wheel versions.
 
 ## Model cache and offline operation
 
@@ -158,7 +169,7 @@ python scripts/test_depth.py data/sample/IMAGE.tif --output-dir outputs/feasibil
 Evaluation with a pixel-aligned ground-truth DSM:
 
 ```powershell
-python scripts/evaluate_depth.py data/sample/IMAGE.tif data/sample/GROUND_TRUTH_DSM.tif --output-dir outputs/evaluation --max-input-size 1024
+python scripts/evaluate_depth.py --image data/sample/IMAGE.tif --ground-truth data/sample/GROUND_TRUTH_DSM.tif --output-dir outputs/evaluation --max-input-size 1024
 ```
 
 The feasibility command answers whether the pipeline can produce coherent

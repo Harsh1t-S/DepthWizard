@@ -58,6 +58,13 @@ function getGridValue(grid: DepthGrid, x: number, y: number): number {
   return Number((grid.values as number[])[y * grid.width + x]);
 }
 
+function isGridValueValid(grid: DepthGrid, x: number, y: number): boolean {
+  const mask = grid.valid_mask;
+  if (!mask) return true;
+  if (Array.isArray(mask[0])) return Boolean((mask as boolean[][])[y]?.[x]);
+  return Boolean((mask as boolean[])[y * grid.width + x]);
+}
+
 function terrainColor(normalized: number): THREE.Color {
   const stops = [
     { at: 0, color: new THREE.Color("#10263d") },
@@ -78,6 +85,7 @@ function createTerrainGeometry(grid: DepthGrid): TerrainData {
   const columns = Math.min(MAX_MESH_DIMENSION, dimensions.width);
   const rows = Math.min(MAX_MESH_DIMENSION, dimensions.height);
   const samples = new Float32Array(columns * rows);
+  const validSamples = new Uint8Array(columns * rows);
   let minimum = Number.POSITIVE_INFINITY;
   let maximum = Number.NEGATIVE_INFINITY;
 
@@ -87,9 +95,14 @@ function createTerrainGeometry(grid: DepthGrid): TerrainData {
       const sourceX = Math.round((column / Math.max(1, columns - 1)) * (dimensions.width - 1));
       const rawValue = getGridValue(grid, sourceX, sourceY);
       const value = Number.isFinite(rawValue) ? rawValue : 0;
-      samples[row * columns + column] = value;
-      minimum = Math.min(minimum, value);
-      maximum = Math.max(maximum, value);
+      const index = row * columns + column;
+      const valid = Number.isFinite(rawValue) && isGridValueValid(grid, sourceX, sourceY);
+      samples[index] = value;
+      validSamples[index] = valid ? 1 : 0;
+      if (valid) {
+        minimum = Math.min(minimum, value);
+        maximum = Math.max(maximum, value);
+      }
     }
   }
 
@@ -131,7 +144,12 @@ function createTerrainGeometry(grid: DepthGrid): TerrainData {
       const topRight = topLeft + 1;
       const bottomLeft = (row + 1) * columns + column;
       const bottomRight = bottomLeft + 1;
-      indices.push(topLeft, bottomLeft, topRight, topRight, bottomLeft, bottomRight);
+      if (validSamples[topLeft] && validSamples[bottomLeft] && validSamples[topRight]) {
+        indices.push(topLeft, bottomLeft, topRight);
+      }
+      if (validSamples[topRight] && validSamples[bottomLeft] && validSamples[bottomRight]) {
+        indices.push(topRight, bottomLeft, bottomRight);
+      }
     }
   }
 
@@ -350,7 +368,7 @@ export default function TerrainViewer({ depthGrid, textureUrl, geospatial, input
 
   return (
     <div ref={wrapperRef} className={`terrain-viewer${isFullscreen ? " is-fullscreen" : ""}`}>
-      <div className="terrain-toolbar" aria-label="3D terrain controls">
+      <div className="terrain-toolbar" role="group" aria-label="3D terrain controls">
         <div className="terrain-toolbar__group">
           <button
             type="button"
@@ -397,7 +415,7 @@ export default function TerrainViewer({ depthGrid, textureUrl, geospatial, input
         </div>
       </div>
 
-      <div className="terrain-canvas" aria-label="Interactive predicted terrain reconstruction">
+      <div className="terrain-canvas" role="img" aria-label="Interactive predicted terrain reconstruction">
         <Canvas
           camera={{ position: CAMERA_POSITION, fov: 43, near: 0.1, far: 100 }}
           dpr={[1, 1.7]}

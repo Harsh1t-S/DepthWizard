@@ -18,7 +18,7 @@ from PIL import Image
 
 DEFAULT_MODEL_ID = "depth-anything/Depth-Anything-V2-Small-hf"
 DEFAULT_MAX_INPUT_SIZE = 1024
-MODEL_PATCH_MULTIPLE = 14
+DEFAULT_PATCH_MULTIPLE = 14
 
 
 class ModelLoadError(RuntimeError):
@@ -97,6 +97,22 @@ class DepthEstimator:
     def loaded(self) -> bool:
         return self._model is not None and self._processor is not None
 
+    def _patch_multiple(self) -> int:
+        """Read the model stride, falling back to V2's documented 14 pixels."""
+
+        config = getattr(self._model, "config", None)
+        backbone_config = getattr(config, "backbone_config", None)
+        raw = getattr(config, "patch_size", None) or getattr(
+            backbone_config, "patch_size", DEFAULT_PATCH_MULTIPLE
+        )
+        if isinstance(raw, (tuple, list)):
+            raw = max(raw)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = DEFAULT_PATCH_MULTIPLE
+        return max(1, value)
+
     def _ensure_loaded(self) -> None:
         if self.loaded:
             return
@@ -131,20 +147,21 @@ class DepthEstimator:
         # Depth Anything V2 uses a 14-pixel patch stride.  Resize exactly once
         # to patch-aligned dimensions bounded by max_input_size, then disable
         # the Hugging Face processor's default 518px resize below.
+        patch_multiple = self._patch_multiple()
         scale = min(1.0, self.max_input_size / max(source_width, source_height))
         inference_width = max(
-            MODEL_PATCH_MULTIPLE,
-            int(round(source_width * scale / MODEL_PATCH_MULTIPLE)) * MODEL_PATCH_MULTIPLE,
+            patch_multiple,
+            int(round(source_width * scale / patch_multiple)) * patch_multiple,
         )
         inference_height = max(
-            MODEL_PATCH_MULTIPLE,
-            int(round(source_height * scale / MODEL_PATCH_MULTIPLE)) * MODEL_PATCH_MULTIPLE,
+            patch_multiple,
+            int(round(source_height * scale / patch_multiple)) * patch_multiple,
         )
         while max(inference_width, inference_height) > self.max_input_size:
-            if inference_width >= inference_height and inference_width > MODEL_PATCH_MULTIPLE:
-                inference_width -= MODEL_PATCH_MULTIPLE
-            elif inference_height > MODEL_PATCH_MULTIPLE:
-                inference_height -= MODEL_PATCH_MULTIPLE
+            if inference_width >= inference_height and inference_width > patch_multiple:
+                inference_width -= patch_multiple
+            elif inference_height > patch_multiple:
+                inference_height -= patch_multiple
             else:
                 break
         working = source
@@ -169,14 +186,14 @@ class DepthEstimator:
                 raise ModelInferenceError("Image processor returned no pixel tensor")
             actual_height = int(pixel_values.shape[-2])
             actual_width = int(pixel_values.shape[-1])
-            inputs = {
-                key: value.to(self.device) if hasattr(value, "to") else value
-                for key, value in inputs.items()
-            }
             # A lock avoids unsafe concurrent access to a single GPU/MPS model and
             # bounds peak memory when multiple API requests arrive together.
             with self._inference_lock, torch.inference_mode():
-                prediction = self._model(**inputs).predicted_depth
+                device_inputs = {
+                    key: value.to(self.device) if hasattr(value, "to") else value
+                    for key, value in inputs.items()
+                }
+                prediction = self._model(**device_inputs).predicted_depth
                 prediction = functional.interpolate(
                     prediction.unsqueeze(1),
                     size=(source_height, source_width),

@@ -103,11 +103,19 @@ def make_mesh_grid(
     )
     # Keep JSON compact and, critically, free of NaN/Infinity tokens.
     resized = np.nan_to_num(resized, nan=fill, posinf=fill, neginf=fill)
-    return {
+    payload: dict[str, Any] = {
         "width": mesh_width,
         "height": mesh_height,
         "values": np.round(resized.reshape(-1), 6).tolist(),
     }
+    if not finite.all():
+        resized_valid = np.asarray(
+            Image.fromarray(finite.astype(np.uint8) * 255).resize(
+                (mesh_width, mesh_height), Image.Resampling.NEAREST
+            )
+        ) > 0
+        payload["valid_mask"] = resized_valid.reshape(-1).tolist()
+    return payload
 
 
 class ArtifactWriter:
