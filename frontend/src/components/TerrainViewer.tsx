@@ -375,7 +375,7 @@ function createTerrainGeometry(
   // 2. Solid 3D Base Skirt
   if (withSkirt) {
     let skirtVIdx = topVertexCount;
-    const skirtColor = new THREE.Color("#0c1b26");
+    const skirtColor = new THREE.Color("#3c4650");
 
     const perimeterIndices: number[] = [];
     for (let c = 0; c < columns; c += 1) perimeterIndices.push(0 * columns + c);
@@ -431,7 +431,7 @@ function createTerrainGeometry(
     positions[b3 * 3] = -width / 2; positions[b3 * 3 + 1] = baseDepthY; positions[b3 * 3 + 2] = depth / 2;
 
     for (const v of [b0, b1, b2, b3]) {
-      colors[v * 3] = 0.05; colors[v * 3 + 1] = 0.09; colors[v * 3 + 2] = 0.12;
+      colors[v * 3] = 0.16; colors[v * 3 + 1] = 0.18; colors[v * 3 + 2] = 0.21;
       uvs[v * 2] = 0; uvs[v * 2 + 1] = 0;
     }
 
@@ -557,7 +557,7 @@ function WalkControls({
   exaggeration: number;
   onExit: () => void;
 }) {
-  const { camera } = useThree();
+  const { camera, invalidate } = useThree();
   const keys = useRef<Record<string, boolean>>({});
   const forward = useRef(new THREE.Vector3());
   const right = useRef(new THREE.Vector3());
@@ -579,12 +579,27 @@ function WalkControls({
     };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
+
+    // The canvas renders on demand for orbiting, where a frame is only needed
+    // after an interaction. Walking needs continuous frames, and toggling the
+    // frameloop prop after mount does not reliably restart the loop, which
+    // leaves useFrame never running and the camera frozen. Driving invalidate()
+    // from an animation frame guarantees frames for as long as this is mounted,
+    // whatever the prop says.
+    let frame = 0;
+    const pump = () => {
+      invalidate();
+      frame = requestAnimationFrame(pump);
+    };
+    frame = requestAnimationFrame(pump);
+
     return () => {
+      cancelAnimationFrame(frame);
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
       keys.current = {};
     };
-  }, [camera, data, exaggeration, onExit]);
+  }, [camera, data, exaggeration, invalidate, onExit]);
 
   useFrame((_, delta) => {
     const pressed = keys.current;
@@ -1038,13 +1053,20 @@ export default function TerrainViewer({
           shadows
         >
           {/*
-            A procedural atmospheric sky rather than drei's Environment presets:
-            those fetch an HDR from a CDN, which would break the offline
-            standalone build. At ground level this is also what stops the
-            horizon being an empty void.
+            The sky belongs to the ground-level view, where an empty horizon is
+            the biggest tell that this is a model rather than a place. In orbit
+            the scene reads as a diorama on a dark stage, and a bright sky there
+            washes out the terrain and fights the surrounding interface.
+
+            drei's Environment presets are deliberately avoided: they fetch an
+            HDR from a CDN, which the offline standalone build cannot do.
           */}
-          <Sky sunPosition={[6, 4.2, 3]} turbidity={5} rayleigh={1.4} mieCoefficient={0.006} />
-          <fog attach="fog" args={["#9fb6c8", 24, 90]} />
+          {navMode === "walk" ? (
+            <Sky sunPosition={[6, 4.2, 3]} turbidity={6} rayleigh={1.1} mieCoefficient={0.005} />
+          ) : (
+            <color attach="background" args={["#050e17"]} />
+          )}
+          <fog attach="fog" args={navMode === "walk" ? ["#a8bccd", 14, 70] : ["#050e17", 11, 26]} />
 
           <ambientLight intensity={0.34} />
           <hemisphereLight args={["#cfe6ff", "#2b3a33", 0.72]} />
@@ -1078,7 +1100,9 @@ export default function TerrainViewer({
             textureLoadKey={textureLoadKey}
           />
 
-          <gridHelper args={[14, 28, "#1a4652", "#0c232a"]} position={[0, -0.62, 0]} />
+          {navMode === "orbit" ? (
+            <gridHelper args={[14, 28, "#1a4652", "#0c232a"]} position={[0, -0.62, 0]} />
+          ) : null}
           {navMode === "walk" ? (
             <WalkControls data={terrain} exaggeration={exaggeration} onExit={() => setNavMode("orbit")} />
           ) : (
