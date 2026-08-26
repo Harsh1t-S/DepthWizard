@@ -38,7 +38,7 @@ interface ResultsWorkspaceProps {
   result: AnalysisResponse;
 }
 
-type OutputBasis = "relative" | "deployment-dem" | "deployment-gcp" | "benchmark-fit";
+type OutputBasis = "relative" | "deployment-dem" | "deployment-gcp" | "deployment-shadow" | "benchmark-fit";
 
 function getReferenceSummary(result: AnalysisResponse) {
   return result.reference ?? result.reference_summary ?? null;
@@ -47,6 +47,11 @@ function getReferenceSummary(result: AnalysisResponse) {
 function getOutputBasis(result: AnalysisResponse): OutputBasis {
   if (result.mode === "reference_dem_calibrated_dsm") return "deployment-dem";
   if (result.mode === "gcp_calibrated_dsm") return "deployment-gcp";
+  // Shadow calibration never consults the ground truth, so pairing it with an
+  // evaluation DSM is a held-out test rather than a benchmark fit. Checking the
+  // mode before the generic "calibrated and has ground truth" rule keeps it
+  // from being mislabelled as leakage.
+  if (result.mode === "shadow_calibrated_dsm") return "deployment-shadow";
   if (result.mode.toLowerCase().includes("benchmark") || (result.calibration && result.urls.ground_truth)) return "benchmark-fit";
   return "relative";
 }
@@ -74,6 +79,13 @@ function getBasisCopy(basis: OutputBasis): { value: string; detail: string; valu
   }
   if (basis === "deployment-gcp") {
     return { value: "Metric estimate", detail: "sparse GCP calibrated", valueLabel: "GCP-calibrated metric estimate" };
+  }
+  if (basis === "deployment-shadow") {
+    return {
+      value: "Metric estimate",
+      detail: "shadow + solar geometry",
+      valueLabel: "shadow-calibrated metric height above ground",
+    };
   }
   if (basis === "benchmark-fit") {
     return { value: "Benchmark fit", detail: "full GT · not deployment", valueLabel: "full-GT benchmark-fit height" };
@@ -236,7 +248,7 @@ function formatMetric(key: string, value: number | string | null | undefined): s
 
 function getViewerCaption(view: ViewId, basis: OutputBasis): string {
   if (view === "depth") {
-    if (basis === "deployment-dem" || basis === "deployment-gcp") {
+    if (basis === "deployment-dem" || basis === "deployment-gcp" || basis === "deployment-shadow") {
       return "Values are a reference-calibrated metric estimate; they are not surveyed ground truth.";
     }
     if (basis === "benchmark-fit") {
@@ -245,7 +257,7 @@ function getViewerCaption(view: ViewId, basis: OutputBasis): string {
     return "Brighter values indicate larger model-relative depth values; RGB-only output has no metric scale.";
   }
   if (view === "terrain") {
-    if (basis === "deployment-dem" || basis === "deployment-gcp") {
+    if (basis === "deployment-dem" || basis === "deployment-gcp" || basis === "deployment-shadow") {
       return "Surface shape is normalized for display; inspected values retain the reference-calibrated metric estimate.";
     }
     if (basis === "benchmark-fit") {
@@ -261,7 +273,8 @@ function getViewerCaption(view: ViewId, basis: OutputBasis): string {
 
 function MetricsPanel({ result }: { result: AnalysisResponse }) {
   const basis = getOutputBasis(result);
-  const isDeploymentCalibration = basis === "deployment-dem" || basis === "deployment-gcp";
+  const isDeploymentCalibration =
+    basis === "deployment-dem" || basis === "deployment-gcp" || basis === "deployment-shadow";
   const isHoldout = hasHoldoutEvaluation(result);
   const metricEntries = result.metrics
     ? Object.entries(result.metrics).filter(

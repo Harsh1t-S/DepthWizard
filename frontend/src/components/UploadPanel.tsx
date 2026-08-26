@@ -1,4 +1,5 @@
 import {
+  Sun,
   ArrowRight,
   Database,
   FileImage,
@@ -26,6 +27,8 @@ interface UploadPanelProps {
   dsmFile: File | null;
   referenceFile: File | null;
   qualityMode: InferenceQualityMode;
+  acquisitionTime: string;
+  onAcquisitionTimeChange: (value: string) => void;
   loadingAction: LoadingAction | null;
   elapsedSeconds: number;
   onImageChange: (file: File | null) => void;
@@ -106,6 +109,8 @@ export function UploadPanel({
   dsmFile,
   referenceFile,
   qualityMode,
+  acquisitionTime,
+  onAcquisitionTimeChange,
   loadingAction,
   elapsedSeconds,
   onImageChange,
@@ -249,6 +254,29 @@ export function UploadPanel({
         </div>
         <p>Quality uses overlapping tiles on large scenes to retain more local structure, with higher latency and GPU use.</p>
       </section>
+
+      <div className="optional-input optional-input--calibration">
+        <div className="optional-input__heading">
+          <div>
+            <Sun size={15} aria-hidden="true" />
+            <span>Acquisition time (UTC)</span>
+          </div>
+          <span className="optional-chip optional-chip--calibration">Metric</span>
+        </div>
+        <p>
+          For a georeferenced raster, the capture time in UTC fixes the sun's
+          position. Shadow length then gives building height in metres with no
+          DEM or control points. Satellite metadata records UTC, not local time.
+        </p>
+        <input
+          type="datetime-local"
+          className="datetime-input"
+          value={acquisitionTime}
+          disabled={busy}
+          onChange={(event) => onAcquisitionTimeChange(event.target.value)}
+          aria-label="Image acquisition date and time in UTC"
+        />
+      </div>
 
       <div className="optional-input optional-input--calibration">
         <div className="optional-input__heading">

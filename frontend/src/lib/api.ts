@@ -68,6 +68,7 @@ export async function analyzeRaster(
   dsm: File | null,
   reference: File | null,
   qualityMode: InferenceQualityMode,
+  acquisitionTime: string,
   signal?: AbortSignal,
 ): Promise<AnalysisResponse> {
   const formData = new FormData();
@@ -80,6 +81,21 @@ export async function analyzeRaster(
     formData.append(field, reference, reference.name);
   }
   formData.append("quality_mode", qualityMode);
+  // Enables shadow-based metric calibration on a georeferenced raster. The
+  // backend ignores it for imagery with no CRS, and declines with a reason
+  // rather than guessing when the solar geometry is unusable.
+  //
+  // Sent verbatim as UTC. Passing it through `new Date()` would reinterpret the
+  // value in the viewer's timezone, so a scene captured at midday would arrive
+  // as a time when the sun is below the horizon for any viewer far enough east
+  // or west, and calibration would refuse.
+  if (acquisitionTime.trim()) {
+    // datetime-local yields "YYYY-MM-DDTHH:MM", sometimes with seconds.
+    const withSeconds = /T\d{2}:\d{2}:\d{2}/.test(acquisitionTime)
+      ? acquisitionTime
+      : `${acquisitionTime}:00`;
+    formData.append("acquisition_time", `${withSeconds}Z`);
+  }
 
   try {
     const response = await fetch(endpoint("/api/analyze"), {

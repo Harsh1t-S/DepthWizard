@@ -19,6 +19,7 @@ export default function App() {
   const [dsmFile, setDsmFile] = useState<File | null>(null);
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
   const [qualityMode, setQualityMode] = useState<InferenceQualityMode>("fast");
+  const [acquisitionTime, setAcquisitionTime] = useState("");
   const [result, setResult] = useState<AnalysisResponse | null>(null);
   const [loadingAction, setLoadingAction] = useState<LoadingAction | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -74,7 +75,7 @@ export default function App() {
       setError("Choose an RGB image or GeoTIFF before starting analysis.");
       return;
     }
-    void runRequest("analyze", (signal) => analyzeRaster(imageFile, dsmFile, referenceFile, qualityMode, signal));
+    void runRequest("analyze", (signal) => analyzeRaster(imageFile, dsmFile, referenceFile, qualityMode, acquisitionTime, signal));
   };
 
   const handleLoadDemo = () => {
@@ -107,6 +108,8 @@ export default function App() {
           dsmFile={dsmFile}
           referenceFile={referenceFile}
           qualityMode={qualityMode}
+          acquisitionTime={acquisitionTime}
+          onAcquisitionTimeChange={setAcquisitionTime}
           loadingAction={loadingAction}
           elapsedSeconds={elapsedSeconds}
           onImageChange={(file) => {
