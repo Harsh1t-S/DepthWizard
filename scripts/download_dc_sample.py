@@ -25,6 +25,18 @@ DSM_SERVICE = (
 DEFAULT_BBOX = (397800.0, 135000.0, 398824.0, 136024.0)
 SOURCE_CRS = 26985
 
+# SIH26175 is scored partly on "performance stability across urban, sparse,
+# hilly, and forested landscapes", so a single downtown tile is not enough to
+# support an accuracy claim. These are 1024 m squares in Maryland State Plane
+# (EPSG:26985) chosen to cover distinct landscape types, each a few megabytes.
+SCENES: dict[str, tuple[tuple[float, float, float, float], str]] = {
+    "downtown": ((397800.0, 135000.0, 398824.0, 136024.0), "Dense high-rise core"),
+    "mall": ((396200.0, 134400.0, 397224.0, 135424.0), "Open ground and low monuments"),
+    "rock-creek": ((395400.0, 139000.0, 396424.0, 140024.0), "Forested valley with relief"),
+    "residential": ((399600.0, 140200.0, 400624.0, 141224.0), "Low-rise housing and tree cover"),
+    "waterfront": ((399000.0, 132600.0, 400024.0, 133624.0), "River, bridges, flat terrain"),
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -47,6 +59,19 @@ def parse_args() -> argparse.Namespace:
         help="Square output pixels; 256-2048 (default: 1024)",
     )
     parser.add_argument(
+        "--scene",
+        default="downtown",
+        choices=tuple(SCENES),
+        help="Named landscape type to download (default: downtown)",
+    )
+    parser.add_argument(
+        "--bbox",
+        type=float,
+        nargs=4,
+        metavar=("MINX", "MINY", "MAXX", "MAXY"),
+        help=f"Explicit bounding box in EPSG:{SOURCE_CRS}, overriding --scene",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Replace an existing downloaded sample",
@@ -54,9 +79,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def export_url(service: str, size: int, pixel_type: str) -> tuple[str, str]:
+def export_url(
+    service: str,
+    size: int,
+    pixel_type: str,
+    bbox: tuple[float, float, float, float] = DEFAULT_BBOX,
+) -> tuple[str, str]:
     params = {
-        "bbox": ",".join(str(value) for value in DEFAULT_BBOX),
+        "bbox": ",".join(str(value) for value in bbox),
         "bboxSR": SOURCE_CRS,
         "imageSR": SOURCE_CRS,
         "size": f"{size},{size}",
@@ -109,6 +139,19 @@ def main() -> int:
     if not 256 <= args.size <= 2048:
         raise SystemExit("--size must be between 256 and 2048")
 
+    if args.bbox:
+        bbox = tuple(args.bbox)
+        scene_label = "custom"
+    else:
+        bbox, description = SCENES[args.scene]
+        scene_label = args.scene
+        print(f"Scene '{scene_label}': {description}")
+
+    # Keep each landscape in its own directory unless one was named explicitly,
+    # so repeated runs build an evaluation set instead of overwriting one tile.
+    if args.output_dir == Path("data/sample/dc-urban") and scene_label != "custom":
+        args.output_dir = Path("data/sample") / f"dc-{scene_label}"
+
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     rgb_path = output_dir / "rgb_2021.tif"
@@ -121,8 +164,8 @@ def main() -> int:
         raise SystemExit(f"Refusing to overwrite {names}; pass --force to replace them")
 
     print("Requesting aligned DC GIS exports...")
-    rgb_request, rgb_download = export_url(ORTHO_SERVICE, args.size, "U8")
-    dsm_request, dsm_download = export_url(DSM_SERVICE, args.size, "F32")
+    rgb_request, rgb_download = export_url(ORTHO_SERVICE, args.size, "U8", bbox)
+    dsm_request, dsm_download = export_url(DSM_SERVICE, args.size, "F32", bbox)
     print(f"Downloading RGB -> {rgb_path}")
     download(rgb_download, rgb_path)
     print(f"Downloading DSM -> {dsm_path}")
@@ -146,7 +189,8 @@ def main() -> int:
             "The exports share a requested grid, but temporal scene changes make "
             "this unsuitable for claiming model accuracy."
         ),
-        "bbox": list(DEFAULT_BBOX),
+        "scene": scene_label,
+        "bbox": list(bbox),
         "crs": f"EPSG:{SOURCE_CRS}",
         "rgb": {
             "year": 2021,

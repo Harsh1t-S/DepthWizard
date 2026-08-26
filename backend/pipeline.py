@@ -27,7 +27,7 @@ from .evaluation import (
     evaluate_relative_depth,
 )
 from .model import QUALITY_MODES, DepthEstimator, PredictionInfo, get_depth_estimator
-from ml.refine import refine_depth_with_image
+from ml.refine import flatten_surfaces, refine_depth_with_image
 from .raster_io import (
     ImageRaster,
     align_elevation_raster,
@@ -50,6 +50,20 @@ def _refinement_settings() -> tuple[bool, int, float]:
     except ValueError as exc:
         raise ValueError("DEPTHWIZARD_REFINE_EPSILON must be a number") from exc
     return enabled, max(1, radius), max(1e-8, epsilon)
+
+
+def _flatten_settings() -> tuple[int, float]:
+    """Read roof-flattening configuration from the environment."""
+
+    try:
+        iterations = int(os.getenv("DEPTHWIZARD_FLATTEN_ITERATIONS", "80"))
+    except ValueError as exc:
+        raise ValueError("DEPTHWIZARD_FLATTEN_ITERATIONS must be an integer") from exc
+    try:
+        kappa = float(os.getenv("DEPTHWIZARD_FLATTEN_KAPPA", "0.12"))
+    except ValueError as exc:
+        raise ValueError("DEPTHWIZARD_FLATTEN_KAPPA must be a number") from exc
+    return max(0, iterations), max(1e-6, kappa)
 
 
 def _max_decoded_pixels() -> int:
@@ -457,6 +471,23 @@ def analyze_bytes(
             f"filter (radius {refine_radius}). This is a display-only refinement; "
             "exported depth, the calibrated DSM, and all metrics use the "
             "unrefined prediction."
+        )
+
+    # Anisotropic diffusion, independent of edge alignment: levels the interior
+    # of each rooftop while refusing to cross its boundary, so buildings read as
+    # flat-topped blocks rather than mounds. Also display-only.
+    flatten_iterations, flatten_kappa = _flatten_settings()
+    if flatten_iterations > 0 and mesh_heights is not None:
+        mesh_heights = flatten_surfaces(
+            mesh_heights,
+            iterations=flatten_iterations,
+            kappa=flatten_kappa,
+            valid_mask=mesh_mask,
+        )
+        notices.append(
+            f"The 3-D surface was levelled with {flatten_iterations} "
+            "anisotropic-diffusion steps to flatten roof planes. Display-only; "
+            "exported products are unaffected."
         )
 
     inference_summary = {

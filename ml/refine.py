@@ -119,3 +119,70 @@ def refine_depth_with_image(
     refined = guided_filter(guide, normalized, radius=radius, epsilon=epsilon)
     output = refined * span + low
     return np.where(finite, output, depth).astype(np.float32, copy=False)
+
+
+DEFAULT_FLATTEN_ITERATIONS = 12
+DEFAULT_FLATTEN_KAPPA = 0.03
+
+
+def flatten_surfaces(
+    depth: np.ndarray,
+    iterations: int = DEFAULT_FLATTEN_ITERATIONS,
+    kappa: float = DEFAULT_FLATTEN_KAPPA,
+    valid_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """Drive the surface toward piecewise-flat regions with sharp boundaries.
+
+    Perona-Malik anisotropic diffusion. Each step moves a pixel toward its
+    neighbours in proportion to how similar they already are, so the interior of
+    a rooftop levels out while the step down to the street is left alone. This
+    is the difference between a rooftop that reads as a flat plane and one that
+    reads as a mound.
+
+    ``kappa`` is expressed as a fraction of the height spread, so the edge
+    threshold adapts to the scene rather than assuming a unit scale.
+    """
+
+    array = np.asarray(depth, dtype=np.float32)
+    finite = np.isfinite(array)
+    if valid_mask is not None:
+        finite &= np.asarray(valid_mask, dtype=bool)
+    if not finite.any() or iterations <= 0:
+        return array
+
+    low = float(array[finite].min())
+    high = float(array[finite].max())
+    span = high - low
+    if span <= np.finfo(np.float32).eps:
+        return array
+
+    working = np.where(finite, array, np.median(array[finite])).astype(np.float32)
+    threshold = max(span * float(kappa), np.finfo(np.float32).eps)
+
+    for _ in range(int(iterations)):
+        # Forward differences in each direction; edges are zero-padded so the
+        # border neither gains nor loses height.
+        north = np.zeros_like(working)
+        south = np.zeros_like(working)
+        west = np.zeros_like(working)
+        east = np.zeros_like(working)
+        north[1:, :] = working[:-1, :] - working[1:, :]
+        south[:-1, :] = working[1:, :] - working[:-1, :]
+        west[:, 1:] = working[:, :-1] - working[:, 1:]
+        east[:, :-1] = working[:, 1:] - working[:, :-1]
+
+        # Conduction falls off with gradient magnitude, so flow effectively
+        # stops at a roof edge while continuing across a flat roof.
+        def conduct(difference: np.ndarray) -> np.ndarray:
+            ratio = difference / threshold
+            return np.exp(-(ratio * ratio)).astype(np.float32)
+
+        # 0.25 is the stability limit for 4-neighbour explicit diffusion.
+        working = working + 0.25 * (
+            conduct(north) * north
+            + conduct(south) * south
+            + conduct(west) * west
+            + conduct(east) * east
+        )
+
+    return np.where(finite, working, array).astype(np.float32, copy=False)

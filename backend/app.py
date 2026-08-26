@@ -231,9 +231,19 @@ def create_app(artifact_root: Path | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    # follow_symlink makes StaticFiles compare an absolute path against the
+    # served directory instead of a fully resolved one.
+    #
+    # Windows virtualizes AppData\Local for containerized apps, so a file under
+    # the artifact root resolves through
+    # AppData\Local\Packages\<app>\LocalCache\... while the directory itself
+    # does not. Starlette's traversal guard compares the two, sees a mismatch,
+    # and returns 404 for artifacts that exist -- every texture and preview in
+    # the viewer fails silently. Comparing absolute paths still normalizes ".."
+    # and still blocks traversal, which is what the guard is actually for.
     application.mount(
         "/artifacts",
-        StaticFiles(directory=str(root)),
+        StaticFiles(directory=str(root), follow_symlink=True),
         name="artifacts",
     )
 
