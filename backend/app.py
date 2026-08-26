@@ -9,6 +9,7 @@ from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -63,6 +64,14 @@ async def _read_upload(upload: UploadFile, label: str) -> bytes:
 
 
 def _public_artifact_base(request: Request) -> str:
+    # Behind a TLS-terminating proxy (Hugging Face Spaces, Cloud Run) the origin
+    # scheme only reaches request.base_url when uvicorn runs with
+    # --proxy-headers --forwarded-allow-ips. The explicit override is the escape
+    # hatch for hosts that strip X-Forwarded-Proto; without a correct scheme the
+    # artifact URLs are http:// and an HTTPS frontend blocks them as mixed content.
+    configured = os.getenv("DEPTHWIZARD_PUBLIC_BASE_URL", "").strip()
+    if configured:
+        return f"{configured.rstrip('/')}/artifacts"
     return f"{str(request.base_url).rstrip('/')}/artifacts"
 
 
@@ -80,14 +89,40 @@ def create_app(artifact_root: Path | None = None) -> FastAPI:
         ),
     )
     application.state.artifact_root = root
+    origins = _cors_origins()
+    # A wildcard origin and credentialed CORS are mutually exclusive per the
+    # Fetch spec: browsers reject Access-Control-Allow-Origin: * when
+    # Allow-Credentials is true. This API is unauthenticated, so drop
+    # credentials rather than the wildcard the deployed frontend relies on.
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=_cors_origins(),
+        allow_origins=origins,
         allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-        allow_credentials=True,
+        allow_credentials="*" not in origins,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
+
+    @application.get("/", include_in_schema=False)
+    async def index() -> HTMLResponse:
+        # Spaces opens the Space root in an iframe; without this the landing
+        # page is a bare {"detail":"Not Found"} that reads as a failed deploy.
+        return HTMLResponse(
+            "<!doctype html><meta charset=utf-8>"
+            "<title>DepthWizard API</title>"
+            "<style>body{font:16px/1.6 system-ui,sans-serif;max-width:34rem;"
+            "margin:4rem auto;padding:0 1.5rem;background:#0b1620;color:#dce8f0}"
+            "a{color:#6ad19f}code{background:#132434;padding:.15em .4em;border-radius:4px}</style>"
+            "<h1>DepthWizard API</h1>"
+            "<p>Monocular depth on aerial imagery (SIH26175). This host serves the "
+            "backend only; the user interface is deployed separately.</p>"
+            "<ul>"
+            '<li><a href="/api/health">/api/health</a> — service and device status</li>'
+            '<li><a href="/api/demo">/api/demo</a> — precomputed synthetic fixture</li>'
+            '<li><code>POST /api/analyze</code> — multipart image upload</li>'
+            '<li><a href="/docs">/docs</a> — OpenAPI reference</li>'
+            "</ul>"
+        )
 
     @application.get("/api/health", tags=["system"])
     async def health() -> dict[str, Any]:

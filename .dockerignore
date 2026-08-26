@@ -13,3 +13,9 @@ data/*
 outputs/
 *.log
 HANDOVER.md
+HANDOVER_CURRENT.md
+backend/artifacts/
+deploy/
+docs/
+scripts/
+tests/

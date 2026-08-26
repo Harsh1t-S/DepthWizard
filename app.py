@@ -1,40 +1,36 @@
-"""Hugging Face Spaces Entrypoint for DepthWizard (100% Free Gradio/Python SDK).
+"""Non-Docker entrypoint for the DepthWizard backend.
 
-Mounts the FastAPI backend so all endpoints (/api/analyze, /api/demo, /api/health, /artifacts)
-are served directly from this 24/7 free space without Docker.
+The Hugging Face Space runs the Dockerfile and starts ``backend.app:app``
+directly, so this module is only a convenience for hosts that expect a
+top-level ``app`` (``uvicorn app:app``).
+
+Gradio is intentionally not used here. ZeroGPU only allocates a GPU inside
+``@spaces.GPU`` functions invoked from Gradio events, so a FastAPI route
+mounted beside a Gradio Blocks never receives one, and Gradio's client-side
+schema walker raises ``TypeError: argument of type 'bool' is not iterable``
+when it introspects this API's multipart ``UploadFile`` OpenAPI schema.
 """
 
 from __future__ import annotations
 
 import os
-import gradio as gr
-from backend.app import create_app
 
-# Configure backend environment for Hugging Face Spaces
 os.environ.setdefault("DEPTHWIZARD_MODEL_ID", "depth-anything/Depth-Anything-V2-Base-hf")
-os.environ.setdefault("DEPTHWIZARD_MAX_INPUT_SIZE", "1024")
-os.environ.setdefault("DEPTHWIZARD_MAX_DECODED_PIXELS", "50000000")
+os.environ.setdefault("DEPTHWIZARD_MAX_INPUT_SIZE", "518")
 os.environ.setdefault("DEPTHWIZARD_ARTIFACT_DIR", "/tmp/artifacts")
 os.environ.setdefault("DEPTHWIZARD_CORS_ORIGINS", "*")
-os.environ.setdefault("HF_HOME", "/tmp/huggingface")
 
-# Create the existing FastAPI application
-fastapi_app = create_app()
+from backend.app import app  # noqa: E402  (env must be set before app import)
 
-# Simple dashboard view at root
-with gr.Blocks(title="DepthWizard API") as demo:
-    gr.Markdown("# 🛰️ DepthWizard Backend API")
-    gr.Markdown(
-        "This Hugging Face Space hosts the **DepthWizard FastAPI Service**.\n\n"
-        "- **Status**: 🟢 Online 24/7\n"
-        "- **Health Check**: [`/api/health`](/api/health)\n"
-        "- **Swagger Docs**: [`/docs`](/docs)\n"
-        "- **Frontend**: Connect your Vercel frontend by setting `VITE_API_URL` to this Space URL."
-    )
-
-# Mount FastAPI app so all /api/* routes are handled by our FastAPI backend
-app = gr.mount_gradio_app(fastapi_app, demo, path="/")
+__all__ = ["app"]
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "7860")),
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )
