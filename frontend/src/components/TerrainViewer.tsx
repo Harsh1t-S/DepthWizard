@@ -351,6 +351,47 @@ function createTerrainGeometry(
   const maxStep = range * MAX_STEP_FRACTION;
   const withinStep = (a: number, b: number) => Math.abs(samples[a] - samples[b]) <= maxStep;
 
+  // Walls are built where the surface steps, rather than the quad simply being
+  // dropped. A heightfield cannot bend vertically, so without explicit geometry
+  // a building either ramps into the street or leaves a hole; extruding the
+  // step gives it an actual side.
+  let extraVertex = withSkirt ? topVertexCount + skirtPerimeterCount * 4 + 4 : topVertexCount;
+  const wallColor = new THREE.Color("#7f858e");
+
+  const pushVertex = (x: number, y: number, z: number, u: number, v: number): number => {
+    const index = extraVertex++;
+    positions[index * 3] = x;
+    positions[index * 3 + 1] = y;
+    positions[index * 3 + 2] = z;
+    colors[index * 3] = wallColor.r;
+    colors[index * 3 + 1] = wallColor.g;
+    colors[index * 3 + 2] = wallColor.b;
+    uvs[index * 2] = u;
+    uvs[index * 2 + 1] = v;
+    return index;
+  };
+
+  /** Extrude a vertical face between two neighbouring surface cells. */
+  const buildWall = (highIndex: number, lowIndex: number, alongIndex: number) => {
+    if (extraVertex + 4 > totalVertices) return;
+    const hx = positions[highIndex * 3];
+    const hy = positions[highIndex * 3 + 1];
+    const hz = positions[highIndex * 3 + 2];
+    const ax = positions[alongIndex * 3];
+    const ay = positions[alongIndex * 3 + 1];
+    const az = positions[alongIndex * 3 + 2];
+    const lowY = positions[lowIndex * 3 + 1];
+
+    // The wall footprint follows the high edge; only the height drops, which is
+    // what makes the face vertical instead of a slope.
+    const a = pushVertex(hx, hy, hz, uvs[highIndex * 2], uvs[highIndex * 2 + 1]);
+    const b = pushVertex(hx, lowY, hz, uvs[highIndex * 2], uvs[highIndex * 2 + 1]);
+    const c = pushVertex(ax, ay, az, uvs[alongIndex * 2], uvs[alongIndex * 2 + 1]);
+    const d = pushVertex(ax, lowY, az, uvs[alongIndex * 2], uvs[alongIndex * 2 + 1]);
+    indices.push(a, b, c, c, b, d);
+    indices.push(c, b, a, d, b, c);
+  };
+
   for (let row = 0; row < rows - 1; row += 1) {
     for (let column = 0; column < columns - 1; column += 1) {
       const topLeft = row * columns + column;
@@ -370,6 +411,19 @@ function createTerrainGeometry(
         withinStep(topRight, bottomLeft)
       ) {
         indices.push(topRight, bottomLeft, bottomRight);
+      }
+
+      // Horizontal and vertical steps each get one wall, oriented so the face
+      // hangs from whichever side is higher.
+      if (validSamples[topLeft] && validSamples[topRight] && !withinStep(topLeft, topRight)) {
+        const high = samples[topLeft] > samples[topRight] ? topLeft : topRight;
+        const low = high === topLeft ? topRight : topLeft;
+        if (validSamples[bottomLeft]) buildWall(high, low, high === topLeft ? bottomLeft : bottomRight);
+      }
+      if (validSamples[topLeft] && validSamples[bottomLeft] && !withinStep(topLeft, bottomLeft)) {
+        const high = samples[topLeft] > samples[bottomLeft] ? topLeft : bottomLeft;
+        const low = high === topLeft ? bottomLeft : topLeft;
+        if (validSamples[topRight]) buildWall(high, low, high === topLeft ? topRight : bottomRight);
       }
     }
   }

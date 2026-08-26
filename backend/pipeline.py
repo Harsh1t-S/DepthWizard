@@ -34,6 +34,7 @@ from .evaluation import (
     evaluate_relative_depth,
 )
 from .model import QUALITY_MODES, DepthEstimator, PredictionInfo, get_depth_estimator
+from ml.buildings import flatten_building_roofs
 from ml.refine import flatten_surfaces, refine_depth_with_image
 
 from .scene_calibration import calibrate_from_scene_shadows
@@ -570,6 +571,21 @@ def analyze_bytes(
             "exported depth, the calibrated DSM, and all metrics use the "
             "unrefined prediction."
         )
+
+    # Segment buildings and fit each roof its own plane. Diffusion alone levels
+    # whatever is locally smooth; this identifies the regions that are actually
+    # structures and makes their roofs planar, which is what separates a
+    # building from a mound. Display-only, like the filters around it.
+    if os.getenv("DEPTHWIZARD_FLATTEN_ROOFS", "1").strip().lower() not in {"0", "false", "off"}:
+        mesh_heights, roof_report = flatten_building_roofs(
+            mesh_heights, valid_mask=mesh_mask
+        )
+        if roof_report["buildings"]:
+            notices.append(
+                f"{roof_report['buildings']} building regions were segmented and "
+                "their roofs fitted to planes for the 3-D surface. Display-only; "
+                "exported products are unaffected."
+            )
 
     # Anisotropic diffusion, independent of edge alignment: levels the interior
     # of each rooftop while refusing to cross its boundary, so buildings read as
