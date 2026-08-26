@@ -75,7 +75,7 @@ def create_app(artifact_root: Path | None = None) -> FastAPI:
         title="DepthWizard API",
         version=API_VERSION,
         description=(
-            "Real Depth Anything V2 Small inference with deployment-reference or "
+            "Real Depth Anything V2 inference with deployment-reference or "
             "benchmark-only calibration and geospatial exports."
         ),
     )
@@ -120,6 +120,7 @@ def create_app(artifact_root: Path | None = None) -> FastAPI:
         reference_dem: UploadFile | None = File(default=None),
         gcps: UploadFile | None = File(default=None),
         gcp_sampling: str = Form(default="bilinear"),
+        quality_mode: str = Form(default="fast"),
     ) -> dict[str, Any]:
         if ground_truth_dsm is not None and dsm is not None:
             raise HTTPException(
@@ -154,6 +155,7 @@ def create_app(artifact_root: Path | None = None) -> FastAPI:
             gcps_bytes=gcps_bytes,
             gcps_filename=(gcps.filename if gcps else None),
             gcp_sampling=gcp_sampling,
+            quality_mode=quality_mode,
             artifact_root=request.app.state.artifact_root,
             public_artifact_base_url=_public_artifact_base(request),
         )

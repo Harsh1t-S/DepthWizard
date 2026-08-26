@@ -2,6 +2,7 @@
 
 from ml.depth_anything import (
     DEFAULT_MODEL_ID,
+    QUALITY_MODES,
     DepthEstimator,
     ModelInferenceError,
     ModelLoadError,
@@ -13,6 +14,7 @@ from ml.depth_anything import (
 
 __all__ = [
     "DEFAULT_MODEL_ID",
+    "QUALITY_MODES",
     "DepthEstimator",
     "ModelInferenceError",
     "ModelLoadError",

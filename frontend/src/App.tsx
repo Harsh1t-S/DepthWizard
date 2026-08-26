@@ -5,7 +5,7 @@ import { EmptyWorkspace } from "./components/EmptyWorkspace";
 import { ResultsWorkspace } from "./components/ResultsWorkspace";
 import { UploadPanel } from "./components/UploadPanel";
 import { analyzeRaster, loadDemo } from "./lib/api";
-import { ApiError, type AnalysisResponse, type LoadingAction } from "./types/api";
+import { ApiError, type AnalysisResponse, type InferenceQualityMode, type LoadingAction } from "./types/api";
 
 function errorMessage(error: unknown): string {
   if (error instanceof DOMException && error.name === "AbortError") return "Request cancelled.";
@@ -18,6 +18,7 @@ export default function App() {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [dsmFile, setDsmFile] = useState<File | null>(null);
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
+  const [qualityMode, setQualityMode] = useState<InferenceQualityMode>("fast");
   const [result, setResult] = useState<AnalysisResponse | null>(null);
   const [loadingAction, setLoadingAction] = useState<LoadingAction | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -73,7 +74,7 @@ export default function App() {
       setError("Choose an RGB image or GeoTIFF before starting analysis.");
       return;
     }
-    void runRequest("analyze", (signal) => analyzeRaster(imageFile, dsmFile, referenceFile, signal));
+    void runRequest("analyze", (signal) => analyzeRaster(imageFile, dsmFile, referenceFile, qualityMode, signal));
   };
 
   const handleLoadDemo = () => {
@@ -105,6 +106,7 @@ export default function App() {
           imageFile={imageFile}
           dsmFile={dsmFile}
           referenceFile={referenceFile}
+          qualityMode={qualityMode}
           loadingAction={loadingAction}
           elapsedSeconds={elapsedSeconds}
           onImageChange={(file) => {
@@ -119,6 +121,7 @@ export default function App() {
             setReferenceFile(file);
             setError(null);
           }}
+          onQualityModeChange={setQualityMode}
           onAnalyze={handleAnalyze}
           onLoadDemo={handleLoadDemo}
           onCancel={handleCancel}

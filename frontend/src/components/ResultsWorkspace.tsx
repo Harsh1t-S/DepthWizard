@@ -81,6 +81,20 @@ function getBasisCopy(basis: OutputBasis): { value: string; detail: string; valu
   return { value: "RGB-only", detail: "relative · scale-ambiguous", valueLabel: "relative depth" };
 }
 
+function getInferenceCopy(result: AnalysisResponse): { mode: string; detail: string } | null {
+  const inference = result.inference;
+  if (!inference) return null;
+
+  const mode = inference.quality_mode === "quality" ? "Quality" : "Fast";
+  const passes = Number.isFinite(inference.passes) ? inference.passes : 1;
+  const passLabel = `${passes} model ${passes === 1 ? "pass" : "passes"}`;
+  const tileCount = Number.isFinite(inference.tile_count) ? inference.tile_count : 0;
+  const detail = inference.tiled && tileCount > 0
+    ? `${passLabel} · ${tileCount} overlapping ${tileCount === 1 ? "tile" : "tiles"}`
+    : passLabel;
+  return { mode, detail };
+}
+
 function flattenValue(grid: DepthGrid, x: number, y: number): number {
   if (Array.isArray(grid.values[0])) {
     return Number((grid.values as number[][])[y]?.[x]);
@@ -369,6 +383,7 @@ function MetadataPanel({ result }: { result: AnalysisResponse }) {
   const basisCopy = getBasisCopy(basis);
   const reference = getReferenceSummary(result);
   const referenceLabel = reference?.filename ?? reference?.source ?? reference?.type;
+  const inferenceCopy = getInferenceCopy(result);
 
   return (
     <section className="details-card details-card--metadata">
@@ -384,6 +399,7 @@ function MetadataPanel({ result }: { result: AnalysisResponse }) {
         <div><dt>CRS</dt><dd>{crs ? String(crs) : "Not embedded"}</dd></div>
         {isGeoreferenced && boundsText ? <div><dt>Bounds</dt><dd className="metadata-list__small">{boundsText}</dd></div> : null}
         <div><dt>Output basis</dt><dd>{basisCopy.valueLabel}</dd></div>
+        {inferenceCopy ? <div><dt>Inference</dt><dd>{inferenceCopy.mode} · {inferenceCopy.detail}</dd></div> : null}
         {referenceLabel ? <div><dt>Calibration source</dt><dd title={String(referenceLabel)}>{String(referenceLabel)}</dd></div> : null}
       </dl>
       {!isGeoreferenced ? (
@@ -426,6 +442,7 @@ function ArtifactPanel({ result }: { result: AnalysisResponse }) {
 export function ResultsWorkspace({ result }: ResultsWorkspaceProps) {
   const basis = getOutputBasis(result);
   const basisCopy = getBasisCopy(basis);
+  const inferenceCopy = getInferenceCopy(result);
   const resolvedUrls = useMemo(
     () => ({
       original: resolveApiUrl(result.urls.original),
@@ -492,7 +509,7 @@ export function ResultsWorkspace({ result }: ResultsWorkspaceProps) {
 
       <div className="run-summary" role="group" aria-label="Run summary">
         <DataTile icon={ImageIcon} label="Input raster" value={`${result.input.width.toLocaleString()} × ${result.input.height.toLocaleString()}`} detail="pixels" />
-        <DataTile icon={Clock3} label="Processing" value={formatDuration(result.processing_time_seconds)} detail="end to end" />
+        <DataTile icon={Clock3} label="Processing" value={formatDuration(result.processing_time_seconds)} detail={inferenceCopy ? `${inferenceCopy.mode} · ${inferenceCopy.detail}` : "end to end"} />
         <DataTile icon={Cpu} label="Compute" value={result.device || "Unknown"} detail={result.model || "model not reported"} />
         <DataTile icon={Gauge} label="Output basis" value={basisCopy.value} detail={basisCopy.detail} />
       </div>

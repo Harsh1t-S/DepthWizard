@@ -2,6 +2,7 @@ import {
   ArrowRight,
   Database,
   FileImage,
+  Gauge,
   ImagePlus,
   LoaderCircle,
   MapPin,
@@ -13,7 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { formatBytes } from "../lib/format";
-import type { LoadingAction } from "../types/api";
+import type { InferenceQualityMode, LoadingAction } from "../types/api";
 
 const ACCEPTED_RASTERS = ".jpg,.jpeg,.png,.tif,.tiff,image/jpeg,image/png,image/tiff";
 const ACCEPTED_EXTENSION = /\.(?:jpe?g|png|tiff?)$/i;
@@ -24,11 +25,13 @@ interface UploadPanelProps {
   imageFile: File | null;
   dsmFile: File | null;
   referenceFile: File | null;
+  qualityMode: InferenceQualityMode;
   loadingAction: LoadingAction | null;
   elapsedSeconds: number;
   onImageChange: (file: File | null) => void;
   onDsmChange: (file: File | null) => void;
   onReferenceChange: (file: File | null) => void;
+  onQualityModeChange: (mode: InferenceQualityMode) => void;
   onAnalyze: () => void;
   onLoadDemo: () => void;
   onCancel: () => void;
@@ -102,11 +105,13 @@ export function UploadPanel({
   imageFile,
   dsmFile,
   referenceFile,
+  qualityMode,
   loadingAction,
   elapsedSeconds,
   onImageChange,
   onDsmChange,
   onReferenceChange,
+  onQualityModeChange,
   onAnalyze,
   onLoadDemo,
   onCancel,
@@ -214,6 +219,36 @@ export function UploadPanel({
           <small>JPG · PNG · TIF · TIFF</small>
         </button>
       )}
+
+      <section className="quality-control" aria-labelledby="quality-control-label">
+        <div className="quality-control__heading" id="quality-control-label">
+          <Gauge size={15} aria-hidden="true" />
+          <span>Inference quality</span>
+        </div>
+        <div className="quality-control__options" role="group" aria-label="Inference quality">
+          <button
+            type="button"
+            className={`quality-option${qualityMode === "fast" ? " is-active" : ""}`}
+            aria-pressed={qualityMode === "fast"}
+            onClick={() => onQualityModeChange("fast")}
+            disabled={busy}
+          >
+            <strong>Fast</strong>
+            <span>1 global pass</span>
+          </button>
+          <button
+            type="button"
+            className={`quality-option${qualityMode === "quality" ? " is-active" : ""}`}
+            aria-pressed={qualityMode === "quality"}
+            onClick={() => onQualityModeChange("quality")}
+            disabled={busy}
+          >
+            <strong>Quality</strong>
+            <span>Multi-pass detail</span>
+          </button>
+        </div>
+        <p>Quality uses overlapping tiles on large scenes to retain more local structure, with higher latency and GPU use.</p>
+      </section>
 
       <div className="optional-input optional-input--calibration">
         <div className="optional-input__heading">

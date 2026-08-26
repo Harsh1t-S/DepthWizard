@@ -26,7 +26,7 @@ from .evaluation import (
     evaluate_calibrated_height,
     evaluate_relative_depth,
 )
-from .model import DepthEstimator, PredictionInfo, get_depth_estimator
+from .model import QUALITY_MODES, DepthEstimator, PredictionInfo, get_depth_estimator
 from .raster_io import (
     ImageRaster,
     align_elevation_raster,
@@ -71,6 +71,10 @@ def _prediction_parts(
             "device": info.device,
             "inference_width": info.inference_width,
             "inference_height": info.inference_height,
+            "quality_mode": info.quality_mode,
+            "inference_passes": info.inference_passes,
+            "tiled": info.tiled,
+            "tile_count": info.tile_count,
         }
     elif isinstance(info, dict):
         metadata = dict(info)
@@ -102,6 +106,7 @@ def analyze_bytes(
     gcps_bytes: bytes | None = None,
     gcps_filename: str | None = None,
     gcp_sampling: str = "bilinear",
+    quality_mode: str = "fast",
     estimator: DepthEstimator | Any | None = None,
     artifact_root: Path | None = None,
     public_artifact_base_url: str | None = None,
@@ -115,6 +120,12 @@ def analyze_bytes(
     normalized_sampling = gcp_sampling.strip().lower()
     if normalized_sampling not in {"nearest", "bilinear"}:
         raise ValueError("GCP sampling must be 'nearest' or 'bilinear'")
+    normalized_quality = quality_mode.strip().lower()
+    if normalized_quality not in QUALITY_MODES:
+        raise ValueError(
+            f"quality_mode must be one of {', '.join(QUALITY_MODES)}, "
+            f"got {quality_mode!r}"
+        )
 
     filename = Path(image_filename or "image").name
     source = read_image_bytes(image_bytes, filename)
@@ -167,7 +178,15 @@ def analyze_bytes(
         gcp_points = parse_gcps_bytes(gcps_bytes, gcp_name)
 
     depth_estimator = estimator or get_depth_estimator()
-    prediction = depth_estimator.predict(Image.fromarray(source.rgb, mode="RGB"))
+    source_image = Image.fromarray(source.rgb, mode="RGB")
+    if normalized_quality == "fast":
+        # Preserve compatibility with custom/test estimators that implement the
+        # original single-argument protocol, and keep the default path unchanged.
+        prediction = depth_estimator.predict(source_image)
+    else:
+        prediction = depth_estimator.predict(
+            source_image, quality_mode=normalized_quality
+        )
     depth, prediction_info = _prediction_parts(
         prediction, depth_estimator, source.width, source.height
     )
@@ -177,6 +196,20 @@ def analyze_bytes(
         "is relative monocular depth, not metric elevation."
     ]
     notices.extend(preprocessing_notices)
+    inference_passes = int(prediction_info.get("inference_passes", 1))
+    tiled = bool(prediction_info.get("tiled", False))
+    tile_count = int(prediction_info.get("tile_count", 0))
+    if normalized_quality == "quality":
+        if tiled:
+            notices.append(
+                f"Quality inference used one global pass plus {tile_count} overlapping "
+                "local tiles with relative-scale alignment and feathered blending."
+            )
+        else:
+            notices.append(
+                "Quality inference averaged the global prediction with a horizontally "
+                "flipped consistency pass after relative-scale alignment."
+            )
     inference_width = int(prediction_info.get("inference_width", source.width))
     inference_height = int(prediction_info.get("inference_height", source.height))
     if (inference_width, inference_height) != (source.width, source.height):
@@ -385,12 +418,22 @@ def analyze_bytes(
         mesh_mask = source.valid_mask
         mode = "relative_depth"
 
+    inference_summary = {
+        "quality_mode": normalized_quality,
+        "passes": inference_passes,
+        "tiled": tiled,
+        "tile_count": tile_count,
+        "bounded_width": inference_width,
+        "bounded_height": inference_height,
+    }
+
     # Keep a machine-readable run record even when no benchmark DSM was
     # supplied; in that case its metric/calibration values are explicitly null.
     metrics_payload = {
         "mode": mode,
         "model": str(prediction_info.get("model_id", "unknown")),
         "device": str(prediction_info.get("device", "unknown")),
+        "inference": inference_summary,
         "metrics": metrics,
         "calibration": calibration,
         "reference": reference_summary,
@@ -411,6 +454,7 @@ def analyze_bytes(
             "filename": filename,
         },
         "processing_time_seconds": round(time.perf_counter() - started, 4),
+        "inference": inference_summary,
         "geospatial": source.geospatial,
         "metrics": metrics,
         "calibration": calibration,

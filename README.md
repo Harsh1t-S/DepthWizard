@@ -15,7 +15,7 @@ enables benchmark evaluation.
 > separate benchmark-only mode: it is useful for feasibility analysis but is
 > non-deployable and must not be reported as accuracy on unseen data.
 
-No accuracy result is bundled or claimed by this repository.
+No deployable or unseen-scene accuracy result is claimed by this repository.
 
 ![DepthWizard interactive 3D synthetic demo](docs/depthwizard-demo.png)
 
@@ -31,7 +31,7 @@ Browser (React + Vite, :5173)
               v
 FastAPI service (:8000) ---- GET /api/demo (precomputed synthetic fixture)
               |
-              +---- Depth Anything V2 Small ---- relative depth
+              +---- Depth Anything V2 Base ---- relative depth
               |
               +---- optional DEM or GCPs ---- deployment-style affine estimate
               |
@@ -93,12 +93,12 @@ drivers or future wheel versions.
 ## Model cache and offline operation
 
 Live inference defaults to
-`depth-anything/Depth-Anything-V2-Small-hf`. On the first live request,
+`depth-anything/Depth-Anything-V2-Base-hf`. On the first live request,
 Transformers downloads the model from Hugging Face, so network access and cache
 space are required. Configure the process before starting the backend:
 
 ```powershell
-$env:DEPTHWIZARD_MODEL_ID = "depth-anything/Depth-Anything-V2-Small-hf"
+$env:DEPTHWIZARD_MODEL_ID = "depth-anything/Depth-Anything-V2-Base-hf"
 $env:DEPTHWIZARD_MAX_INPUT_SIZE = "1024"
 $env:DEPTHWIZARD_MAX_DECODED_PIXELS = "50000000"
 $env:DEPTHWIZARD_ARTIFACT_DIR = "outputs/jobs"
@@ -172,11 +172,27 @@ Relative-depth feasibility (no metric accuracy claim):
 python scripts/test_depth.py data/sample/IMAGE.tif --output-dir outputs/feasibility --max-input-size 1024
 ```
 
+Add `--quality-mode quality` for the slower multi-pass detail path.
+
 Evaluation with a pixel-aligned ground-truth DSM:
 
 ```powershell
 python scripts/evaluate_depth.py --image data/sample/IMAGE.tif --ground-truth data/sample/GROUND_TRUTH_DSM.tif --output-dir outputs/evaluation --max-input-size 1024
 ```
+
+Compare supported model sizes on the compact DC pair:
+
+```powershell
+python scripts/benchmark_depth_models.py --models small base --max-input-size 1024 --timed-runs 3 --output outputs/model-benchmark.json
+```
+
+The benchmark records model revision, runtime, memory, relative correlation,
+and same-scene affine-fit metrics with source hashes and scientific warnings.
+It is why Base is the current default: on the included DC smoke-test pair at
+1024px, Base produced 0.770 relative correlation versus 0.393 for Small while
+using about 1.04 GiB peak allocated CUDA memory. The RGB and DSM are from
+different years and the affine fit uses the full DSM, so these values select a
+prototype configuration; they are not real-world accuracy claims.
 
 Deployment-style calibration from a coarse DEM:
 
@@ -258,17 +274,24 @@ Example calls:
 ```powershell
 curl.exe http://localhost:8000/api/health
 curl.exe -F "image=@data/sample/IMAGE.tif" http://localhost:8000/api/analyze
+curl.exe -F "image=@data/sample/IMAGE.tif" -F "quality_mode=quality" http://localhost:8000/api/analyze
 curl.exe -F "image=@data/sample/IMAGE.tif" -F "ground_truth_dsm=@data/sample/GROUND_TRUTH_DSM.tif" http://localhost:8000/api/analyze
 curl.exe -F "image=@data/sample/IMAGE.tif" -F "reference_dem=@data/sample/SRTM.tif" http://localhost:8000/api/analyze
 curl.exe -F "image=@data/sample/IMAGE.tif" -F "gcps=@data/sample/GCP.csv" -F "gcp_sampling=bilinear" http://localhost:8000/api/analyze
 ```
+
+`quality_mode` accepts `fast` (one global pass) or `quality` (flip consistency
+for smaller inputs, or overlapping scale-aligned tiles for larger inputs).
+High-detail mode costs more inference passes and preserves some global structure
+when blending tiles; it is an inference strategy, not a learned confidence or
+guarantee of greater accuracy.
 
 `reference_dem` and `gcps` are mutually exclusive. `ground_truth_dsm` is always
 an evaluation input when a deployment reference is present; otherwise it is
 used for the explicitly labelled full-ground-truth benchmark fit.
 
 Live responses include `job_id`, `demo`, `precomputed`, `model`, `device`,
-`mode`, `input`, `processing_time_seconds`, `geospatial`, `metrics`,
+`mode`, `input`, `processing_time_seconds`, `inference`, `geospatial`, `metrics`,
 `calibration`, `reference`, `depth_grid`, `urls`, `artifacts`, and `notices`.
 
 ## Outputs and GeoTIFF behavior

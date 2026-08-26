@@ -69,6 +69,17 @@ export interface ReferenceSummary {
   [key: string]: string | number | boolean | null | undefined;
 }
 
+export type InferenceQualityMode = "fast" | "quality";
+
+export interface InferenceSummary {
+  quality_mode: InferenceQualityMode | string;
+  passes: number;
+  tiled: boolean;
+  tile_count: number;
+  bounded_width?: number;
+  bounded_height?: number;
+}
+
 export interface ResultUrls {
   original?: string | null;
   depth?: string | null;
@@ -91,6 +102,7 @@ export interface AnalysisResponse {
   calibration: CalibrationMetadata | null;
   reference?: ReferenceSummary | null;
   reference_summary?: ReferenceSummary | null;
+  inference?: InferenceSummary | null;
   depth_grid: DepthGrid;
   urls: ResultUrls;
   artifacts: Record<string, string>;

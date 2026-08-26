@@ -1,4 +1,4 @@
-import { ApiError, type AnalysisResponse } from "../types/api";
+import { ApiError, type AnalysisResponse, type InferenceQualityMode } from "../types/api";
 
 const configuredUrl = import.meta.env.VITE_API_URL?.trim();
 
@@ -57,6 +57,7 @@ export async function analyzeRaster(
   image: File,
   dsm: File | null,
   reference: File | null,
+  qualityMode: InferenceQualityMode,
   signal?: AbortSignal,
 ): Promise<AnalysisResponse> {
   const formData = new FormData();
@@ -68,6 +69,7 @@ export async function analyzeRaster(
     const field = /\.(?:csv|json)$/i.test(reference.name) ? "gcps" : "reference_dem";
     formData.append(field, reference, reference.name);
   }
+  formData.append("quality_mode", qualityMode);
 
   try {
     const response = await fetch(endpoint("/api/analyze"), {

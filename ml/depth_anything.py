@@ -16,9 +16,12 @@ import numpy as np
 from PIL import Image
 
 
-DEFAULT_MODEL_ID = "depth-anything/Depth-Anything-V2-Small-hf"
+DEFAULT_MODEL_ID = "depth-anything/Depth-Anything-V2-Base-hf"
 DEFAULT_MAX_INPUT_SIZE = 1024
 DEFAULT_PATCH_MULTIPLE = 14
+QUALITY_MODES = ("fast", "quality")
+QUALITY_TILE_OVERLAP_FRACTION = 0.25
+QUALITY_GLOBAL_BLEND = 0.15
 
 
 class ModelLoadError(RuntimeError):
@@ -67,10 +70,14 @@ class PredictionInfo:
     device: str
     inference_width: int
     inference_height: int
+    quality_mode: str = "fast"
+    inference_passes: int = 1
+    tiled: bool = False
+    tile_count: int = 0
 
 
 class DepthEstimator:
-    """Depth Anything V2 Small estimator with lazy, thread-safe model loading."""
+    """Depth Anything V2 estimator with lazy, thread-safe model loading."""
 
     def __init__(
         self,
@@ -135,15 +142,13 @@ class DepthEstimator:
             self._processor = processor
             self._model = model
 
-    def predict(self, image: Image.Image) -> tuple[np.ndarray, PredictionInfo]:
-        """Return a float32 relative-depth map at the source image resolution."""
+    def _predict_once(
+        self, source: Image.Image
+    ) -> tuple[np.ndarray, int, int]:
+        """Run one bounded model pass and return depth on ``source``'s grid."""
 
         self._ensure_loaded()
-        source = image.convert("RGB")
         source_width, source_height = source.size
-        if source_width < 1 or source_height < 1:
-            raise ModelInferenceError("Input image has no pixels")
-
         # Depth Anything V2 uses a 14-pixel patch stride.  Resize exactly once
         # to patch-aligned dimensions bounded by max_input_size, then disable
         # the Hugging Face processor's default 518px resize below.
@@ -211,11 +216,166 @@ class DepthEstimator:
         if depth.shape != (source_height, source_width) or not np.isfinite(depth).any():
             raise ModelInferenceError("Model returned an invalid depth map")
 
+        return depth, actual_width, actual_height
+
+    @staticmethod
+    def _tile_starts(length: int, tile_size: int, overlap: int) -> list[int]:
+        """Return starts that cover an axis fully, including its final edge."""
+
+        if length <= tile_size:
+            return [0]
+        stride = max(1, tile_size - overlap)
+        starts = list(range(0, length - tile_size + 1, stride))
+        final_start = length - tile_size
+        if starts[-1] != final_start:
+            starts.append(final_start)
+        return starts
+
+    @staticmethod
+    def _blend_weights(height: int, width: int) -> np.ndarray:
+        """Create a feathering window with a non-zero border for image edges."""
+
+        def axis_weights(length: int) -> np.ndarray:
+            if length <= 2:
+                return np.ones(length, dtype=np.float32)
+            phase = np.linspace(0.0, np.pi, length, dtype=np.float32)
+            return np.maximum(np.sin(phase), np.float32(0.05))
+
+        return np.outer(axis_weights(height), axis_weights(width)).astype(
+            np.float32, copy=False
+        )
+
+    @staticmethod
+    def _match_relative_scale(
+        prediction: np.ndarray, reference: np.ndarray
+    ) -> np.ndarray:
+        """Align a local relative-depth tile to the global prediction robustly.
+
+        Monocular depth has arbitrary scale and offset.  Matching the 5th/50th/
+        95th percentiles before blending prevents independently inferred tiles
+        from creating artificial height steps at their boundaries.
+        """
+
+        valid = np.isfinite(prediction) & np.isfinite(reference)
+        if int(valid.sum()) < 32:
+            return prediction
+        predicted_values = prediction[valid].astype(np.float64, copy=False)
+        reference_values = reference[valid].astype(np.float64, copy=False)
+        predicted_low, predicted_mid, predicted_high = np.quantile(
+            predicted_values, (0.05, 0.5, 0.95)
+        )
+        reference_low, reference_mid, reference_high = np.quantile(
+            reference_values, (0.05, 0.5, 0.95)
+        )
+        predicted_span = predicted_high - predicted_low
+        reference_span = reference_high - reference_low
+        epsilon = np.finfo(np.float32).eps
+        if predicted_span <= epsilon or reference_span <= epsilon:
+            scale = 1.0
+        else:
+            # A positive scale preserves the depth orientation of the global pass.
+            scale = reference_span / predicted_span
+        offset = reference_mid - scale * predicted_mid
+        return (prediction * np.float32(scale) + np.float32(offset)).astype(
+            np.float32, copy=False
+        )
+
+    def _predict_quality(
+        self, source: Image.Image, global_depth: np.ndarray
+    ) -> tuple[np.ndarray, int, bool, int]:
+        """Add flip consistency or overlap-tiled local detail to a global pass."""
+
+        source_width, source_height = source.size
+        if max(source_width, source_height) <= self.max_input_size:
+            flipped = source.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+            flipped_depth, _, _ = self._predict_once(flipped)
+            flipped_depth = np.ascontiguousarray(np.fliplr(flipped_depth))
+            flipped_depth = self._match_relative_scale(flipped_depth, global_depth)
+            return (
+                ((global_depth + flipped_depth) * np.float32(0.5)).astype(
+                    np.float32, copy=False
+                ),
+                2,
+                False,
+                0,
+            )
+
+        tile_size = self.max_input_size
+        overlap = min(
+            tile_size - 1,
+            max(
+                self._patch_multiple() * 4,
+                int(tile_size * QUALITY_TILE_OVERLAP_FRACTION),
+            ),
+        )
+        x_starts = self._tile_starts(source_width, tile_size, overlap)
+        y_starts = self._tile_starts(source_height, tile_size, overlap)
+        accumulated = np.zeros((source_height, source_width), dtype=np.float32)
+        total_weight = np.zeros_like(accumulated)
+        tile_count = 0
+
+        for y_start in y_starts:
+            y_stop = min(source_height, y_start + tile_size)
+            for x_start in x_starts:
+                x_stop = min(source_width, x_start + tile_size)
+                tile = source.crop((x_start, y_start, x_stop, y_stop))
+                tile_depth, _, _ = self._predict_once(tile)
+                global_tile = global_depth[y_start:y_stop, x_start:x_stop]
+                tile_depth = self._match_relative_scale(tile_depth, global_tile)
+                weights = self._blend_weights(tile_depth.shape[0], tile_depth.shape[1])
+                accumulated[y_start:y_stop, x_start:x_stop] += tile_depth * weights
+                total_weight[y_start:y_stop, x_start:x_stop] += weights
+                tile_count += 1
+
+        np.divide(
+            accumulated,
+            total_weight,
+            out=accumulated,
+            where=total_weight > 0,
+        )
+        # Retain a small contribution from the global prediction so local tiles
+        # cannot erase broad scene structure while contributing finer detail.
+        accumulated *= np.float32(1.0 - QUALITY_GLOBAL_BLEND)
+        accumulated += global_depth * np.float32(QUALITY_GLOBAL_BLEND)
+        return accumulated, tile_count + 1, True, tile_count
+
+    def predict(
+        self, image: Image.Image, quality_mode: str = "fast"
+    ) -> tuple[np.ndarray, PredictionInfo]:
+        """Return relative depth, optionally using a slower aerial-quality path."""
+
+        normalized_quality = quality_mode.strip().lower()
+        if normalized_quality not in QUALITY_MODES:
+            raise ValueError(
+                f"quality_mode must be one of {', '.join(QUALITY_MODES)}, "
+                f"got {quality_mode!r}"
+            )
+        source = image.convert("RGB")
+        source_width, source_height = source.size
+        if source_width < 1 or source_height < 1:
+            raise ModelInferenceError("Input image has no pixels")
+
+        depth, actual_width, actual_height = self._predict_once(source)
+        inference_passes = 1
+        tiled = False
+        tile_count = 0
+        if normalized_quality == "quality":
+            depth, inference_passes, tiled, tile_count = self._predict_quality(
+                source, depth
+            )
+
+        if depth.shape != (source_height, source_width) or not np.isfinite(depth).any():
+            raise ModelInferenceError("Model returned an invalid depth map")
+
         return depth, PredictionInfo(
             model_id=self.model_id,
             device=self.device,
             inference_width=actual_width,
             inference_height=actual_height,
+            quality_mode=normalized_quality,
+            inference_passes=inference_passes,
+            tiled=tiled,
+            tile_count=tile_count,
         )
 
 

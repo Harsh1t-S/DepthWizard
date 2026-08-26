@@ -19,7 +19,7 @@ from ml.depth_anything import DepthEstimator  # noqa: E402
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run Depth Anything V2 Small and export relative-depth artifacts."
+        description="Run Depth Anything V2 and export relative-depth artifacts."
     )
     parser.add_argument("image", type=Path, help="RGB image or GeoTIFF")
     parser.add_argument(
@@ -41,6 +41,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Inference device override (default: auto-detect)",
     )
+    parser.add_argument(
+        "--quality-mode",
+        choices=("fast", "quality"),
+        default="fast",
+        help="One global pass or slower overlap/consistency inference (default: fast)",
+    )
     return parser.parse_args()
 
 
@@ -58,6 +64,7 @@ def main() -> int:
         result = analyze_bytes(
             args.image.read_bytes(),
             args.image.name,
+            quality_mode=args.quality_mode,
             estimator=estimator,
             artifact_root=args.output_dir,
         )
@@ -71,6 +78,7 @@ def main() -> int:
         "device": result["device"],
         "mode": result["mode"],
         "processing_time_seconds": result["processing_time_seconds"],
+        "inference": result.get("inference"),
         "artifacts": result["artifacts"],
         "notices": result["notices"],
     }
