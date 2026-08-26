@@ -14,6 +14,7 @@ def test_building_footprints_create_an_oriented_solid() -> None:
 
     assert len(footprints) == 1
     footprint = footprints[0]
+    assert footprint["_label"] == 1
     assert len(footprint["points"]) == 4
     assert np.isclose(footprint["roof_height"], 0.72)
     assert np.isclose(footprint["base_height"], 0.2)

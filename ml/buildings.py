@@ -179,8 +179,8 @@ def make_building_footprints(
     ground: np.ndarray,
     *,
     rgb: np.ndarray | None = None,
-    max_buildings: int = 160,
-    minimum_fill: float = 0.42,
+    max_buildings: int = 280,
+    minimum_fill: float = 0.30,
 ) -> list[dict[str, object]]:
     """Create compact oriented roof footprints for display-only extrusion.
 
@@ -205,7 +205,10 @@ def make_building_footprints(
 
     height, width = regions.shape
     scene_spread = float(np.nanmax(roofs) - np.nanmin(roofs))
-    minimum_relief = max(scene_spread * 0.035, np.finfo(np.float32).eps)
+    # The segmentation mask already requires a 6% local rise. Using another
+    # high median-relief cutoff here discarded many low urban roofs after plane
+    # fitting, leaving their original mounds visible in flythrough mode.
+    minimum_relief = max(scene_spread * 0.018, np.finfo(np.float32).eps)
     counts = np.bincount(regions.reshape(-1))
     ordered_labels = np.argsort(counts[1:])[::-1] + 1
     footprints: list[dict[str, object]] = []
@@ -253,7 +256,15 @@ def make_building_footprints(
             water_fraction = float(
                 np.mean((blue - red > 14.0) & (blue >= green * 0.92) & (green < 165.0))
             )
-            if green_fraction > 0.28 or water_fraction > 0.46:
+            region_fraction = rectangle_area / float(height * width)
+            # Strong green is reliable even for small tree crowns. Blue/dark
+            # rejection is restricted to large regions because many urban
+            # orthophotos carry a cool cast and otherwise lose real rooftops.
+            if green_fraction > 0.58:
+                continue
+            if region_fraction > 0.003 and green_fraction > 0.30:
+                continue
+            if region_fraction > 0.006 and water_fraction > 0.50:
                 continue
 
         roof_height = float(np.nanmedian(roofs[rows, columns]))
@@ -285,6 +296,7 @@ def make_building_footprints(
 
         footprints.append(
             {
+                "_label": int(label),
                 "points": normalized_corners,
                 "roof_height": roof_height,
                 "base_height": base_height,

@@ -31,8 +31,6 @@ const TOPDOWN_CAMERA_POSITION: [number, number, number] = [0, 7.8, 0];
 const HEIGHT_SCALE = 0.55;
 /** Height differences beyond this fraction of the scene spread count as edges. */
 const EDGE_PRESERVE_FRACTION = 0.06;
-/** Quads spanning a larger fraction of the spread are dropped, not stretched. */
-const MAX_STEP_FRACTION = 0.11;
 
 type TextureState = "idle" | "loading" | "loaded" | "failed";
 type CameraPreset = "perspective" | "topdown";
@@ -69,6 +67,8 @@ interface TerrainData {
   /** Scene-unit extent of the surface, used to map world x/z back to the grid. */
   planeWidth: number;
   planeDepth: number;
+  /** Simplified solid roofs used by first-person collision sampling. */
+  buildings: Array<{ points: [number, number][]; roofNormalized: number }>;
 }
 
 interface BuildingGeometryData {
@@ -280,6 +280,16 @@ function createTerrainGeometry(
     minimum = 0;
     maximum = 1;
   }
+  if (
+    Number.isFinite(grid.minimum) && Number.isFinite(grid.maximum) &&
+    Number(grid.maximum) > Number(grid.minimum)
+  ) {
+    // The backend may remove building mounds from the terrain mesh and render
+    // them as separate solids. Keep the original scene domain so terrain and
+    // roof heights still share one vertical scale.
+    minimum = Number(grid.minimum);
+    maximum = Number(grid.maximum);
+  }
 
   // Apply smoothing
   const passes = smoothing === "none" ? 0 : smoothing === "subtle" ? 1 : smoothing === "balanced" ? 2 : 4;
@@ -350,88 +360,22 @@ function createTerrainGeometry(
     }
   }
 
-  // Top Triangles.
-  //
-  // A quad spanning a large height step is a building wall, not ground. Joining
-  // those corners stretches one triangle from roof to street and reads as a
-  // smooth ramp, which is what rounds off building silhouettes. Dropping them
-  // leaves the skirt and the sharp roof outline instead.
-  const maxStep = range * MAX_STEP_FRACTION;
-  const withinStep = (a: number, b: number) => Math.abs(samples[a] - samples[b]) <= maxStep;
-
-  // Walls are built where the surface steps, rather than the quad simply being
-  // dropped. A heightfield cannot bend vertically, so without explicit geometry
-  // a building either ramps into the street or leaves a hole; extruding the
-  // step gives it an actual side.
-  let extraVertex = withSkirt ? topVertexCount + skirtPerimeterCount * 4 + 4 : topVertexCount;
-  const wallColor = new THREE.Color("#7f858e");
-
-  const pushVertex = (x: number, y: number, z: number, u: number, v: number): number => {
-    const index = extraVertex++;
-    positions[index * 3] = x;
-    positions[index * 3 + 1] = y;
-    positions[index * 3 + 2] = z;
-    colors[index * 3] = wallColor.r;
-    colors[index * 3 + 1] = wallColor.g;
-    colors[index * 3 + 2] = wallColor.b;
-    uvs[index * 2] = u;
-    uvs[index * 2 + 1] = v;
-    return index;
-  };
-
-  /** Extrude a vertical face between two neighbouring surface cells. */
-  const buildWall = (highIndex: number, lowIndex: number, alongIndex: number) => {
-    if (extraVertex + 4 > totalVertices) return;
-    const hx = positions[highIndex * 3];
-    const hy = positions[highIndex * 3 + 1];
-    const hz = positions[highIndex * 3 + 2];
-    const ax = positions[alongIndex * 3];
-    const ay = positions[alongIndex * 3 + 1];
-    const az = positions[alongIndex * 3 + 2];
-    const lowY = positions[lowIndex * 3 + 1];
-
-    // The wall footprint follows the high edge; only the height drops, which is
-    // what makes the face vertical instead of a slope.
-    const a = pushVertex(hx, hy, hz, uvs[highIndex * 2], uvs[highIndex * 2 + 1]);
-    const b = pushVertex(hx, lowY, hz, uvs[highIndex * 2], uvs[highIndex * 2 + 1]);
-    const c = pushVertex(ax, ay, az, uvs[alongIndex * 2], uvs[alongIndex * 2 + 1]);
-    const d = pushVertex(ax, lowY, az, uvs[alongIndex * 2], uvs[alongIndex * 2 + 1]);
-    indices.push(a, b, c, c, b, d);
-    indices.push(c, b, a, d, b, c);
-  };
-
+  // Keep the base terrain watertight. Earlier builds dropped triangles across
+  // large height steps and attempted to add replacement walls, but the wall
+  // buffer had no capacity, producing the black cavities visible in close-ups.
+  // Buildings now have their own explicit roof/wall geometry, so this surface
+  // should remain continuous wherever source pixels are valid.
   for (let row = 0; row < rows - 1; row += 1) {
     for (let column = 0; column < columns - 1; column += 1) {
       const topLeft = row * columns + column;
       const topRight = topLeft + 1;
       const bottomLeft = (row + 1) * columns + column;
       const bottomRight = bottomLeft + 1;
-      if (
-        validSamples[topLeft] && validSamples[bottomLeft] && validSamples[topRight] &&
-        withinStep(topLeft, bottomLeft) && withinStep(topLeft, topRight) &&
-        withinStep(bottomLeft, topRight)
-      ) {
+      if (validSamples[topLeft] && validSamples[bottomLeft] && validSamples[topRight]) {
         indices.push(topLeft, bottomLeft, topRight);
       }
-      if (
-        validSamples[topRight] && validSamples[bottomLeft] && validSamples[bottomRight] &&
-        withinStep(topRight, bottomRight) && withinStep(bottomLeft, bottomRight) &&
-        withinStep(topRight, bottomLeft)
-      ) {
+      if (validSamples[topRight] && validSamples[bottomLeft] && validSamples[bottomRight]) {
         indices.push(topRight, bottomLeft, bottomRight);
-      }
-
-      // Horizontal and vertical steps each get one wall, oriented so the face
-      // hangs from whichever side is higher.
-      if (validSamples[topLeft] && validSamples[topRight] && !withinStep(topLeft, topRight)) {
-        const high = samples[topLeft] > samples[topRight] ? topLeft : topRight;
-        const low = high === topLeft ? topRight : topLeft;
-        if (validSamples[bottomLeft]) buildWall(high, low, high === topLeft ? bottomLeft : bottomRight);
-      }
-      if (validSamples[topLeft] && validSamples[bottomLeft] && !withinStep(topLeft, bottomLeft)) {
-        const high = samples[topLeft] > samples[bottomLeft] ? topLeft : bottomLeft;
-        const low = high === topLeft ? bottomLeft : topLeft;
-        if (validSamples[topRight]) buildWall(high, low, high === topLeft ? topRight : bottomRight);
       }
     }
   }
@@ -511,6 +455,23 @@ function createTerrainGeometry(
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
 
+  const buildingColliders: TerrainData["buildings"] = [];
+  for (const footprint of grid.building_footprints ?? []) {
+    if (footprint.points.length < 3 || !Number.isFinite(footprint.roof_height)) continue;
+    buildingColliders.push({
+      points: footprint.points,
+      roofNormalized: Math.max(
+        0,
+        Math.min(
+          1,
+          alreadyNormalized
+            ? footprint.roof_height
+            : (footprint.roof_height - minimum) / range,
+        ),
+      ),
+    });
+  }
+
   return {
     geometry,
     columns,
@@ -520,6 +481,7 @@ function createTerrainGeometry(
     normalized: normalizedHeights,
     planeWidth: width,
     planeDepth: depth,
+    buildings: buildingColliders,
   };
 }
 
@@ -745,9 +707,24 @@ function projectPixel(
 
 
 /** Eye height above the surface, in scene units, for first-person navigation. */
-const MIN_EYE_HEIGHT = 0.08;
+// This is an aerial 2.5-D reconstruction: the source has roof pixels but no
+// facade pixels. Keep flythrough above the roofs rather than exposing a false
+// street-level view where the overhead texture necessarily smears down walls.
+const MIN_EYE_HEIGHT = 0.30;
 const WALK_SPEED = 1.35;
 const RUN_MULTIPLIER = 2.6;
+
+function pointInFootprint(u: number, v: number, points: [number, number][]): boolean {
+  let inside = false;
+  for (let index = 0, previous = points.length - 1; index < points.length; previous = index, index += 1) {
+    const [xi, yi] = points[index];
+    const [xj, yj] = points[previous];
+    const crosses = (yi > v) !== (yj > v) &&
+      u < ((xj - xi) * (v - yi)) / (yj - yi || Number.EPSILON) + xi;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
 
 /**
  * Sample the terrain height at a world x/z position.
@@ -773,7 +750,12 @@ function surfaceHeightAt(data: TerrainData, x: number, z: number, exaggeration: 
   const h11 = data.normalized[z1 * data.columns + x1];
   const top = h00 * (1 - fx) + h10 * fx;
   const bottom = h01 * (1 - fx) + h11 * fx;
-  const normalized = top * (1 - fz) + bottom * fz;
+  let normalized = top * (1 - fz) + bottom * fz;
+  for (const building of data.buildings) {
+    if (pointInFootprint(u, v, building.points)) {
+      normalized = Math.max(normalized, building.roofNormalized);
+    }
+  }
 
   return (normalized - 0.5) * HEIGHT_SCALE * exaggeration;
 }
@@ -795,14 +777,15 @@ function WalkControls({
   const keys = useRef<Record<string, boolean>>({});
   const forward = useRef(new THREE.Vector3());
   const right = useRef(new THREE.Vector3());
-  const altitudeOffset = useRef(MIN_EYE_HEIGHT + 0.12);
+  const altitudeOffset = useRef(MIN_EYE_HEIGHT + 0.28);
 
   useEffect(() => {
     // Start above the front-centre of the surface looking slightly forward.
-    const startY = surfaceHeightAt(data, 0, data.planeDepth * 0.35, exaggeration) + MIN_EYE_HEIGHT + 0.15;
+    const startY = surfaceHeightAt(data, 0, data.planeDepth * 0.35, exaggeration) + MIN_EYE_HEIGHT + 0.28;
     camera.position.set(0, startY, data.planeDepth * 0.38);
-    camera.lookAt(0, startY, 0);
-    altitudeOffset.current = MIN_EYE_HEIGHT + 0.15;
+    const centreY = surfaceHeightAt(data, 0, 0, exaggeration) + MIN_EYE_HEIGHT * 0.25;
+    camera.lookAt(0, centreY, 0);
+    altitudeOffset.current = MIN_EYE_HEIGHT + 0.28;
 
     const down = (event: KeyboardEvent) => {
       keys.current[event.code] = true;
@@ -910,9 +893,9 @@ function CameraControls({
       makeDefault
       enableDamping
       dampingFactor={0.06}
-      minDistance={2.4}
+      minDistance={3.1}
       maxDistance={14}
-      maxPolarAngle={Math.PI / 2.05}
+      maxPolarAngle={Math.PI * 0.4}
       autoRotate={autoRotate}
       autoRotateSpeed={0.85}
     />
@@ -1286,10 +1269,10 @@ export default function TerrainViewer({
             onClick={() => setNavMode((current) => (current === "walk" ? "orbit" : "walk"))}
             aria-pressed={navMode === "walk"}
             aria-label="Toggle first-person flythrough mode"
-            title="First-person flythrough (Click to enter: WASD move, Q/E altitude, Mouse look, ESC exit)"
+            title="Low-altitude aerial flythrough (Click to enter: WASD move, Q/E altitude, Mouse look, ESC exit)"
           >
             <Footprints size={14} />
-            <span>{navMode === "walk" ? "Exit Fly" : "Flythrough"}</span>
+            <span>{navMode === "walk" ? "Exit Fly" : "Aerial fly"}</span>
           </button>
         </div>
 
@@ -1462,7 +1445,7 @@ export default function TerrainViewer({
         </div>
       ) : navMode === "walk" ? (
         <div className="terrain-hint terrain-hint--walk">
-          🎮 Flythrough Active · Click canvas to lock · WASD: Fly · Q/E: Height · Shift: Turbo · ESC: Orbit
+          🎮 Aerial Flythrough · Click canvas to lock · WASD: Fly · Q/E: Height · Shift: Turbo · ESC: Orbit
         </div>
       ) : (
         <div className="terrain-hint">Drag to orbit · Scroll to zoom · Click the 3D surface to inspect elevation</div>

@@ -609,18 +609,42 @@ def analyze_bytes(
             "exported products are unaffected."
         )
 
-    # The mesh grid drives how sharp the reconstruction can look, so it is
-    # carried at 512 cells as a 16-bit PNG instead of a JSON float array. At the
-    # old 192-cell cap a wall had a single cell to fall through and every roof
-    # edge became a slope.
-    depth_grid = make_mesh_grid(mesh_heights, valid_mask=mesh_mask)
+    # Preserve one shared height domain before replacing accepted structure
+    # regions with their estimated bare-earth surface. The browser renders those
+    # structures separately as roof polygons + vertical walls; leaving the old
+    # depth mound underneath is what made close fly-ins look melted.
+    domain_valid = np.isfinite(mesh_heights)
+    if mesh_mask is not None:
+        domain_valid &= np.asarray(mesh_mask, dtype=bool)
+    domain_minimum = float(mesh_heights[domain_valid].min()) if domain_valid.any() else 0.0
+    domain_maximum = float(mesh_heights[domain_valid].max()) if domain_valid.any() else 1.0
+    building_footprints: list[dict[str, object]] = []
     if building_labels is not None and building_ground is not None:
-        depth_grid["building_footprints"] = make_building_footprints(
+        building_footprints = make_building_footprints(
             building_labels,
             mesh_heights,
             building_ground,
             rgb=source.rgb,
         )
+        accepted_labels = [int(item.pop("_label")) for item in building_footprints]
+        if accepted_labels:
+            solid_mask = np.isin(building_labels, accepted_labels)
+            mesh_heights = np.where(solid_mask, building_ground, mesh_heights).astype(
+                np.float32, copy=False
+            )
+            notices.append(
+                f"{len(building_footprints)} accepted structure regions were "
+                "separated into display-only roof and wall geometry; the raw "
+                "prediction and exported products are unchanged."
+            )
+
+    # The mesh grid drives how sharp the reconstruction can look, so it is
+    # carried at 512 cells as a 16-bit PNG instead of a JSON float array.
+    depth_grid = make_mesh_grid(mesh_heights, valid_mask=mesh_mask)
+    depth_grid["minimum"] = domain_minimum
+    depth_grid["maximum"] = domain_maximum
+    if building_footprints:
+        depth_grid["building_footprints"] = building_footprints
     quantised, mesh_valid, mesh_low, mesh_high = quantize_height_grid(
         mesh_heights, valid_mask=mesh_mask
     )
