@@ -19,10 +19,12 @@ import {
 } from "lucide-react";
 import { type ElementRef, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
+import { resolveApiUrl } from "../lib/api";
 import { formatNumber } from "../lib/format";
+import { decodeHeightGrid } from "../lib/heightGrid";
 import type { DepthGrid, GeospatialMetadata } from "../types/api";
 
-const MAX_MESH_DIMENSION = 256;
+const MAX_MESH_DIMENSION = 512;
 const PERSPECTIVE_CAMERA_POSITION: [number, number, number] = [4.8, 4.2, 5.4];
 const TOPDOWN_CAMERA_POSITION: [number, number, number] = [0, 7.8, 0];
 const HEIGHT_SCALE = 0.55;
@@ -833,9 +835,37 @@ export default function TerrainViewer({
   const [textureState, setTextureState] = useState<TextureState>("idle");
   const [textureLoadKey, setTextureLoadKey] = useState(0);
 
+  // The coarse JSON array renders immediately; the sharp grid arrives as an
+  // image a moment later and replaces it. Falling back rather than blocking
+  // means a decode failure costs edge sharpness, not the whole viewer.
+  const [sharpGrid, setSharpGrid] = useState<DepthGrid | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setSharpGrid(null);
+    decodeHeightGrid(depthGrid, resolveApiUrl)
+      .then((decoded) => {
+        if (!active || !decoded) return;
+        setSharpGrid({
+          width: decoded.width,
+          height: decoded.height,
+          values: decoded.values as unknown as number[],
+          valid_mask: (decoded.valid ?? undefined) as unknown as boolean[] | undefined,
+        });
+      })
+      .catch(() => {
+        // Keep the fallback grid; the viewer stays usable.
+      });
+    return () => {
+      active = false;
+    };
+  }, [depthGrid]);
+
+  const activeGrid = sharpGrid ?? depthGrid;
+
   const terrain = useMemo(
-    () => createTerrainGeometry(depthGrid, smoothing, detrend, withSkirt, materialMode),
-    [depthGrid, smoothing, detrend, withSkirt, materialMode],
+    () => createTerrainGeometry(activeGrid, smoothing, detrend, withSkirt, materialMode),
+    [activeGrid, smoothing, detrend, withSkirt, materialMode],
   );
 
   useEffect(() => () => terrain.geometry.dispose(), [terrain]);
@@ -1087,7 +1117,7 @@ export default function TerrainViewer({
 
           <TerrainMesh
             data={terrain}
-            grid={depthGrid}
+            grid={activeGrid}
             inputWidth={inputWidth}
             inputHeight={inputHeight}
             geospatial={geospatial}

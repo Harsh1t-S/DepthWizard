@@ -1,10 +1,29 @@
 export type DepthValues = number[] | number[][];
 
+/** Full-resolution height field, carried as a 16-bit PNG. */
+export interface EncodedHeightGrid {
+  url: string;
+  format: "png16";
+  minimum: number;
+  maximum: number;
+  width: number;
+  height: number;
+  mask_url?: string | null;
+}
+
 export interface DepthGrid {
   width: number;
   height: number;
   values: DepthValues;
   valid_mask?: boolean[] | boolean[][];
+  minimum?: number;
+  maximum?: number;
+  /**
+   * Present when the backend emitted a high-resolution height image. The
+   * `values` array above stays as a coarse fallback, so a client that ignores
+   * this still renders, just with softer edges.
+   */
+  encoded?: EncodedHeightGrid | null;
 }
 
 export interface InputMetadata {

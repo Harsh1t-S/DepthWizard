@@ -12,7 +12,13 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from .artifacts import ArtifactWriter, default_artifact_root, make_mesh_grid, normalize_for_preview
+from .artifacts import (
+    ArtifactWriter,
+    default_artifact_root,
+    make_mesh_grid,
+    normalize_for_preview,
+    quantize_height_grid,
+)
 from .calibration import (
     calibrate_depth_from_gcps,
     calibrate_depth_from_reference_raster,
@@ -474,6 +480,7 @@ def analyze_bytes(
         "reference_dem": None,
         "calibrated_dsm": None,
         "calibrated_dsm_npy": None,
+        "height16": None,
     }
 
     if aligned_reference_dem is not None and aligned_reference_dem_mask is not None:
@@ -581,6 +588,32 @@ def analyze_bytes(
             "exported products are unaffected."
         )
 
+    # The mesh grid drives how sharp the reconstruction can look, so it is
+    # carried at 512 cells as a 16-bit PNG instead of a JSON float array. At the
+    # old 192-cell cap a wall had a single cell to fall through and every roof
+    # edge became a slope.
+    depth_grid = make_mesh_grid(mesh_heights, valid_mask=mesh_mask)
+    quantised, mesh_valid, mesh_low, mesh_high = quantize_height_grid(
+        mesh_heights, valid_mask=mesh_mask
+    )
+    artifacts["height_png16"] = writer.write_height_png16(
+        "height16.png", quantised, mesh_valid
+    )
+    depth_grid["encoded"] = {
+        "url": artifacts["height_png16"],
+        "format": "png16",
+        "minimum": mesh_low,
+        "maximum": mesh_high,
+        "width": int(quantised.shape[1]),
+        "height": int(quantised.shape[0]),
+        "mask_url": (
+            artifacts["height_png16"].replace("height16.png", "height16_mask.png")
+            if not mesh_valid.all()
+            else None
+        ),
+    }
+    urls["height16"] = artifacts["height_png16"]
+
     inference_summary = {
         "quality_mode": normalized_quality,
         "passes": inference_passes,
@@ -622,7 +655,7 @@ def analyze_bytes(
         "metrics": metrics,
         "calibration": calibration,
         "reference": reference_summary,
-        "depth_grid": make_mesh_grid(mesh_heights, valid_mask=mesh_mask),
+        "depth_grid": depth_grid,
         "urls": urls,
         "artifacts": artifacts,
         "notices": notices,

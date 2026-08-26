@@ -77,10 +77,21 @@ def make_mesh_grid(
     target_long_edge: int = 192,
     valid_mask: np.ndarray | None = None,
 ) -> dict[str, Any]:
-    """Resize a height raster to a roughly 160--256-cell mesh long edge."""
+    """Resize a height raster onto the mesh grid the viewer renders.
 
-    if not 160 <= target_long_edge <= 256:
-        raise ValueError("Mesh target long edge must be between 160 and 256")
+    The long edge drives how sharp buildings can possibly look. At 192 cells a
+    1 km tile gives roughly 5 m per cell, so a wall has a single cell to fall
+    through and every roof edge becomes a slope; no amount of downstream
+    filtering can recover a discontinuity the samples cannot hold.
+
+    This JSON form stays coarse on purpose: it is the compatibility fallback,
+    and a full-resolution float array would be about 2 MB of text. The sharp
+    grid the viewer actually renders travels as a 16-bit PNG alongside it, via
+    quantize_height_grid.
+    """
+
+    if not 64 <= target_long_edge <= 2048:
+        raise ValueError("Mesh target long edge must be between 64 and 2048")
     array = np.asarray(heights, dtype=np.float32)
     if array.ndim != 2:
         raise ValueError("Mesh heights must be a two-dimensional array")
@@ -106,8 +117,15 @@ def make_mesh_grid(
     payload: dict[str, Any] = {
         "width": mesh_width,
         "height": mesh_height,
-        "values": np.round(resized.reshape(-1), 6).tolist(),
     }
+
+    low = float(resized.min())
+    high = float(resized.max())
+    payload["minimum"] = low
+    payload["maximum"] = high
+
+    payload["values"] = np.round(resized.reshape(-1), 6).tolist()
+
     if not finite.all():
         resized_valid = np.asarray(
             Image.fromarray(finite.astype(np.uint8) * 255).resize(
@@ -116,6 +134,57 @@ def make_mesh_grid(
         ) > 0
         payload["valid_mask"] = resized_valid.reshape(-1).tolist()
     return payload
+
+
+def quantize_height_grid(
+    heights: np.ndarray,
+    target_long_edge: int = 512,
+    valid_mask: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, float, float]:
+    """Return a 16-bit height image, its validity mask, and the value range.
+
+    Sixteen bits over the scene's own range keeps the quantisation step near a
+    millimetre for a hundred-metre spread, far below the model's own error, so
+    the transport adds no visible terracing.
+    """
+
+    array = np.asarray(heights, dtype=np.float32)
+    if array.ndim != 2:
+        raise ValueError("Mesh heights must be a two-dimensional array")
+    source_height, source_width = array.shape
+    scale = target_long_edge / max(source_width, source_height)
+    mesh_width = max(2, int(round(source_width * scale)))
+    mesh_height = max(2, int(round(source_height * scale)))
+
+    finite = np.isfinite(array)
+    if valid_mask is not None:
+        finite &= np.asarray(valid_mask, dtype=bool)
+    fill = float(np.median(array[finite])) if finite.any() else 0.0
+    filled = array.copy()
+    filled[~finite] = fill
+
+    resized = np.asarray(
+        Image.fromarray(filled, mode="F").resize(
+            (mesh_width, mesh_height), Image.Resampling.BILINEAR
+        ),
+        dtype=np.float32,
+    )
+    resized = np.nan_to_num(resized, nan=fill, posinf=fill, neginf=fill)
+    mask = np.asarray(
+        Image.fromarray(finite.astype(np.uint8) * 255).resize(
+            (mesh_width, mesh_height), Image.Resampling.NEAREST
+        )
+    ) > 0
+
+    low = float(resized.min())
+    high = float(resized.max())
+    span = high - low
+    if span <= np.finfo(np.float32).eps:
+        quantised = np.zeros(resized.shape, dtype=np.uint16)
+    else:
+        quantised = np.clip((resized - low) / span, 0.0, 1.0)
+        quantised = (quantised * 65535.0).round().astype(np.uint16)
+    return quantised, mask, low, high
 
 
 class ArtifactWriter:
@@ -160,6 +229,32 @@ class ArtifactWriter:
         normalized = normalize_for_preview(values, valid_mask)
         rgb = _colorize(normalized, valid_mask)
         return self.write_rgb(filename, rgb)
+
+    def write_height_png16(
+        self,
+        filename: str,
+        quantised: np.ndarray,
+        valid: np.ndarray | None = None,
+    ) -> str:
+        """Write the mesh height field as a 16-bit greyscale PNG.
+
+        Invalid cells are encoded in a separate 8-bit mask rather than a
+        sentinel value, because any sentinel inside a 16-bit range is also a
+        legitimate height somewhere in some scene.
+        """
+
+        # Pillow infers I;16 from a uint16 array; passing mode explicitly is
+        # deprecated and removed in Pillow 13.
+        Image.fromarray(np.asarray(quantised, dtype=np.uint16)).save(
+            self.path(filename), format="PNG", optimize=True
+        )
+        reference = self.reference(filename)
+        if valid is not None and not valid.all():
+            mask_name = filename.replace(".png", "_mask.png")
+            Image.fromarray((np.asarray(valid, dtype=bool) * 255).astype(np.uint8)).save(
+                self.path(mask_name), format="PNG", optimize=True
+            )
+        return reference
 
     def write_npy(self, filename: str, values: np.ndarray) -> str:
         np.save(self.path(filename), np.asarray(values, dtype=np.float32), allow_pickle=False)
