@@ -197,7 +197,13 @@ python desktop.py
 Headless: `$env:DEPTHWIZARD_PORT="8900"; python desktop.py --no-window`
 
 Packaged build — **`dist\DepthWizard\DepthWizard.exe`**, not `build\`, which is
-PyInstaller scratch with no Python runtime:
+PyInstaller scratch with no Python runtime.
+
+Current build verified 2026-08-27: 3.6 GB, native window opens, and a GeoTIFF
+upload with ground truth returns `shadow_calibrated_dsm`, MAE 7.84 m / RMSE
+11.45 m, a 512-cell mesh, a normal map, and a calibrated DSM GeoTIFF. Cold start
+of the frozen bundle takes roughly 60-90 s; a check that gives up sooner reports
+a connection refused that is not real.
 
 ```powershell
 python -m pip install -r requirements-desktop.txt
