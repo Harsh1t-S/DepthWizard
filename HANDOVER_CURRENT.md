@@ -173,7 +173,13 @@ the full-resolution prediction.
    georeferenced path. Fixed by adding `collect_submodules` for rasterio and
    pyproj to the spec. **Any packaged-build check must use a GeoTIFF**; a JPEG
    passes straight through the gap.
-7. **No SSAO.** `@react-three/postprocessing@3.1.0` requires `three >= 0.182`;
+7. **The staging cache is not the bundle.** `packaging/hf_cache` accumulates
+   every checkpoint anyone evaluates with `HF_HOME` pointed at it — after the
+   backbone comparison it held nine models and 10.5 GB, and the spec bundled all
+   of it, taking the build from 3.3 GB to 11 GB. The spec now selects only
+   `DEPTHWIZARD_MODEL_ID`. Prune the cache anyway if disk matters; only the
+   default model is needed to ship.
+8. **No SSAO.** `@react-three/postprocessing@3.1.0` requires `three >= 0.182`;
    the project is on `0.179.1`. Upgrading three risks the working viewer, so
    this was deliberately skipped. It remains the largest cheap realism win if
    someone wants to take the upgrade on.

@@ -8,6 +8,7 @@
 # onefile build would re-extract all of them to a temporary directory on every
 # launch, adding a long delay before the window appears.
 
+import os
 from pathlib import Path
 
 from PyInstaller.utils.hooks import (
@@ -56,9 +57,26 @@ datas.append((str(frontend_dist), "frontend_dist"))
 
 # Model weights, when staged, make the bundle run with no network access.
 # Populate with: python packaging/fetch_weights.py
+#
+# Only the configured model is bundled, not the whole cache directory. The cache
+# accumulates every checkpoint anyone evaluates with HF_HOME pointed at it, and
+# bundling it wholesale once took the build from 3.3 GB to 11 GB on the strength
+# of benchmark downloads that ship no function.
 weights = PROJECT_ROOT / "packaging" / "hf_cache"
-if (weights / "hub").is_dir():
-    datas.append((str(weights), "hf_cache"))
+model_id = os.environ.get(
+    "DEPTHWIZARD_MODEL_ID", "depth-anything/Depth-Anything-V2-Base-hf"
+)
+model_dir = weights / "hub" / ("models--" + model_id.replace("/", "--"))
+if model_dir.is_dir():
+    datas.append((str(model_dir), "hf_cache/hub/" + model_dir.name))
+    for extra in ("version.txt", "version_diffusers_cache.txt"):
+        marker = weights / "hub" / extra
+        if marker.is_file():
+            datas.append((str(marker), "hf_cache/hub"))
+elif (weights / "hub").is_dir():
+    raise SystemExit(
+        f"{model_id} is not staged in {weights}. Run: python packaging/fetch_weights.py"
+    )
 
 # rasterio and pyproj carry GDAL/PROJ data files that must travel with the
 # binary, or opening any GeoTIFF fails at runtime with a projection error.
