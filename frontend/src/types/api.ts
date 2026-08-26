@@ -1,5 +1,14 @@
 export type DepthValues = number[] | number[][];
 
+export interface BuildingFootprint {
+  /** Clockwise normalized image coordinates, [u, v]. */
+  points: [number, number][];
+  roof_height: number;
+  base_height: number;
+  area_pixels?: number;
+  confidence?: number;
+}
+
 /** Full-resolution height field, carried as a 16-bit PNG. */
 export interface EncodedHeightGrid {
   url: string;
@@ -24,6 +33,8 @@ export interface DepthGrid {
    * this still renders, just with softer edges.
    */
   encoded?: EncodedHeightGrid | null;
+  /** Display-only roof polygons used to render true vertical building walls. */
+  building_footprints?: BuildingFootprint[];
 }
 
 export interface InputMetadata {

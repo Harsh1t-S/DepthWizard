@@ -111,6 +111,7 @@ def flatten_building_roofs(
     height_threshold: float = DEFAULT_HEIGHT_THRESHOLD,
     min_area: int = DEFAULT_MIN_AREA,
     valid_mask: np.ndarray | None = None,
+    return_regions: bool = False,
 ) -> tuple[np.ndarray, dict[str, object]]:
     """Level each detected roof onto its own fitted plane.
 
@@ -138,6 +139,11 @@ def flatten_building_roofs(
     normalized = working - ground
     labels, count = label_regions(normalized > spread * height_threshold, min_area)
     report["buildings"] = int(count)
+    if return_regions:
+        # Private, in-process fields used to build display-only solid geometry.
+        # They are deliberately not included in metrics or exported DSM data.
+        report["_labels"] = labels
+        report["_ground"] = ground
     if count == 0:
         return array, report
 
@@ -165,3 +171,126 @@ def flatten_building_roofs(
 
     report["coverage"] = float((labels > 0).mean())
     return np.where(finite, output, array).astype(np.float32, copy=False), report
+
+
+def make_building_footprints(
+    labels: np.ndarray,
+    roof_heights: np.ndarray,
+    ground: np.ndarray,
+    *,
+    rgb: np.ndarray | None = None,
+    max_buildings: int = 160,
+    minimum_fill: float = 0.42,
+) -> list[dict[str, object]]:
+    """Create compact oriented roof footprints for display-only extrusion.
+
+    Each connected component is approximated by a PCA-oriented rectangle. The
+    result is intentionally small JSON rather than a dense segmentation mask,
+    and gives the browser actual roof polygons and vertical wall locations.
+    Irregular, extremely thin components are rejected because they are usually
+    roads, trees, or monocular-depth artefacts rather than buildings.
+    """
+
+    regions = np.asarray(labels, dtype=np.int32)
+    roofs = np.asarray(roof_heights, dtype=np.float32)
+    bare_ground = np.asarray(ground, dtype=np.float32)
+    if regions.shape != roofs.shape or regions.shape != bare_ground.shape:
+        raise ValueError("Labels, roof heights, and ground must share a pixel grid")
+    if regions.ndim != 2 or not regions.size or regions.max(initial=0) <= 0:
+        return []
+
+    image = None if rgb is None else np.asarray(rgb)
+    if image is not None and (image.ndim != 3 or image.shape[:2] != regions.shape or image.shape[2] < 3):
+        raise ValueError("RGB guidance must share the labels' pixel grid")
+
+    height, width = regions.shape
+    scene_spread = float(np.nanmax(roofs) - np.nanmin(roofs))
+    minimum_relief = max(scene_spread * 0.035, np.finfo(np.float32).eps)
+    counts = np.bincount(regions.reshape(-1))
+    ordered_labels = np.argsort(counts[1:])[::-1] + 1
+    footprints: list[dict[str, object]] = []
+
+    for label in ordered_labels:
+        if len(footprints) >= max_buildings:
+            break
+        rows, columns = np.nonzero(regions == int(label))
+        area = int(rows.size)
+        if area < DEFAULT_MIN_AREA:
+            continue
+
+        points = np.column_stack((columns, rows)).astype(np.float64)
+        centre = points.mean(axis=0)
+        centred = points - centre
+        covariance = centred.T @ centred / max(1, area)
+        _, eigenvectors = np.linalg.eigh(covariance)
+        major = eigenvectors[:, -1]
+        if major[0] < 0:
+            major = -major
+        minor = np.array([-major[1], major[0]], dtype=np.float64)
+        axes = np.column_stack((major, minor))
+        projected = centred @ axes
+
+        lower = projected.min(axis=0) - 0.5
+        upper = projected.max(axis=0) + 0.5
+        spans = np.maximum(upper - lower, 1.0)
+        rectangle_area = float(spans[0] * spans[1])
+        fill = float(area / rectangle_area)
+        aspect = float(max(spans) / max(1.0, min(spans)))
+        if fill < minimum_fill or aspect > 12.0:
+            continue
+        # A huge, loosely rectangular region is normally a hill, lake, or tree
+        # canopy merged by the relative-depth threshold rather than one roof.
+        if rectangle_area / float(height * width) > 0.018 and fill < 0.72:
+            continue
+
+        green_fraction = 0.0
+        water_fraction = 0.0
+        if image is not None:
+            colours = image[rows, columns, :3].astype(np.float32)
+            red, green, blue = colours[:, 0], colours[:, 1], colours[:, 2]
+            green_excess = green - 0.5 * (red + blue)
+            green_fraction = float(np.mean((green_excess > 10.0) & (green > 45.0)))
+            water_fraction = float(
+                np.mean((blue - red > 14.0) & (blue >= green * 0.92) & (green < 165.0))
+            )
+            if green_fraction > 0.28 or water_fraction > 0.46:
+                continue
+
+        roof_height = float(np.nanmedian(roofs[rows, columns]))
+        base_height = float(np.nanmedian(bare_ground[rows, columns]))
+        if not np.isfinite(roof_height) or not np.isfinite(base_height):
+            continue
+        if roof_height - base_height < minimum_relief:
+            continue
+
+        projected_corners = np.array(
+            [
+                [lower[0], lower[1]],
+                [upper[0], lower[1]],
+                [upper[0], upper[1]],
+                [lower[0], upper[1]],
+            ],
+            dtype=np.float64,
+        )
+        corners = projected_corners @ axes.T + centre
+        corners[:, 0] = np.clip(corners[:, 0], 0, max(0, width - 1))
+        corners[:, 1] = np.clip(corners[:, 1], 0, max(0, height - 1))
+        normalized_corners = [
+            [
+                float(column / max(1, width - 1)),
+                float(row / max(1, height - 1)),
+            ]
+            for column, row in corners
+        ]
+
+        footprints.append(
+            {
+                "points": normalized_corners,
+                "roof_height": roof_height,
+                "base_height": base_height,
+                "area_pixels": area,
+                "confidence": fill * (1.0 - 0.65 * green_fraction - 0.45 * water_fraction),
+            }
+        )
+
+    return footprints

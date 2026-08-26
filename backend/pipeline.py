@@ -34,7 +34,7 @@ from .evaluation import (
     evaluate_relative_depth,
 )
 from .model import QUALITY_MODES, DepthEstimator, PredictionInfo, get_depth_estimator
-from ml.buildings import flatten_building_roofs
+from ml.buildings import flatten_building_roofs, make_building_footprints
 from ml.refine import flatten_surfaces, refine_depth_with_image
 
 from .scene_calibration import calibrate_from_scene_shadows
@@ -577,10 +577,14 @@ def analyze_bytes(
     # whatever is locally smooth; this identifies the regions that are actually
     # structures and makes their roofs planar, which is what separates a
     # building from a mound. Display-only, like the filters around it.
+    building_labels: np.ndarray | None = None
+    building_ground: np.ndarray | None = None
     if os.getenv("DEPTHWIZARD_FLATTEN_ROOFS", "1").strip().lower() not in {"0", "false", "off"}:
         mesh_heights, roof_report = flatten_building_roofs(
-            mesh_heights, valid_mask=mesh_mask
+            mesh_heights, valid_mask=mesh_mask, return_regions=True
         )
+        building_labels = roof_report.pop("_labels", None)
+        building_ground = roof_report.pop("_ground", None)
         if roof_report["buildings"]:
             notices.append(
                 f"{roof_report['buildings']} building regions were segmented and "
@@ -610,6 +614,13 @@ def analyze_bytes(
     # old 192-cell cap a wall had a single cell to fall through and every roof
     # edge became a slope.
     depth_grid = make_mesh_grid(mesh_heights, valid_mask=mesh_mask)
+    if building_labels is not None and building_ground is not None:
+        depth_grid["building_footprints"] = make_building_footprints(
+            building_labels,
+            mesh_heights,
+            building_ground,
+            rgb=source.rgb,
+        )
     quantised, mesh_valid, mesh_low, mesh_high = quantize_height_grid(
         mesh_heights, valid_mask=mesh_mask
     )

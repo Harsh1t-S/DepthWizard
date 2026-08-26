@@ -2,6 +2,7 @@ import { OrbitControls, PointerLockControls, Sky } from "@react-three/drei";
 import { Canvas, type ThreeEvent, useFrame, useThree } from "@react-three/fiber";
 import {
   ArrowDown,
+  Building2,
   Expand,
   Focus,
   Grid3X3,
@@ -22,7 +23,7 @@ import * as THREE from "three";
 import { resolveApiUrl } from "../lib/api";
 import { formatNumber } from "../lib/format";
 import { decodeHeightGrid } from "../lib/heightGrid";
-import type { DepthGrid, GeospatialMetadata } from "../types/api";
+import type { BuildingFootprint, DepthGrid, GeospatialMetadata } from "../types/api";
 
 const MAX_MESH_DIMENSION = 512;
 const PERSPECTIVE_CAMERA_POSITION: [number, number, number] = [4.8, 4.2, 5.4];
@@ -68,6 +69,12 @@ interface TerrainData {
   /** Scene-unit extent of the surface, used to map world x/z back to the grid. */
   planeWidth: number;
   planeDepth: number;
+}
+
+interface BuildingGeometryData {
+  roofs: THREE.BufferGeometry;
+  walls: THREE.BufferGeometry;
+  count: number;
 }
 
 function getGridDimensions(grid: DepthGrid): { width: number; height: number } {
@@ -516,6 +523,176 @@ function createTerrainGeometry(
   };
 }
 
+/** Build real polygon roofs and vertical facade quads above the DSM surface. */
+function createBuildingGeometry(
+  footprints: BuildingFootprint[],
+  terrain: TerrainData,
+): BuildingGeometryData | null {
+  if (!footprints.length) return null;
+
+  const roofPositions: number[] = [];
+  const roofUvs: number[] = [];
+  const roofIndices: number[] = [];
+  const wallPositions: number[] = [];
+  const wallIndices: number[] = [];
+  const range = terrain.maximum - terrain.minimum || 1;
+  const alreadyNormalized = terrain.minimum >= -0.01 && terrain.maximum <= 1.01 && range <= 1.02;
+  const normalize = (value: number) => Math.max(
+    0,
+    Math.min(1, alreadyNormalized ? value : (value - terrain.minimum) / range),
+  );
+  let rendered = 0;
+
+  for (const footprint of footprints) {
+    if (!Array.isArray(footprint.points) || footprint.points.length < 3) continue;
+    const points = footprint.points.filter(
+      (point): point is [number, number] =>
+        Array.isArray(point) && point.length >= 2 && Number.isFinite(point[0]) && Number.isFinite(point[1]),
+    );
+    if (points.length !== 4) continue;
+
+    const roofNormalized = normalize(Number(footprint.roof_height));
+    const baseNormalized = normalize(Number(footprint.base_height));
+    if (!Number.isFinite(roofNormalized) || !Number.isFinite(baseNormalized)) continue;
+    if (roofNormalized <= baseNormalized + 0.008) continue;
+
+    const roofY = (roofNormalized - 0.5) * HEIGHT_SCALE + 0.003;
+    const baseY = (baseNormalized - 0.5) * HEIGHT_SCALE;
+    const roofStart = roofPositions.length / 3;
+
+    for (const [u, v] of points) {
+      roofPositions.push(
+        (u - 0.5) * terrain.planeWidth,
+        roofY,
+        (v - 0.5) * terrain.planeDepth,
+      );
+      roofUvs.push(u, 1 - v);
+    }
+    roofIndices.push(
+      roofStart, roofStart + 1, roofStart + 2,
+      roofStart, roofStart + 2, roofStart + 3,
+    );
+
+    for (let edge = 0; edge < points.length; edge += 1) {
+      const [u0, v0] = points[edge];
+      const [u1, v1] = points[(edge + 1) % points.length];
+      const x0 = (u0 - 0.5) * terrain.planeWidth;
+      const z0 = (v0 - 0.5) * terrain.planeDepth;
+      const x1 = (u1 - 0.5) * terrain.planeWidth;
+      const z1 = (v1 - 0.5) * terrain.planeDepth;
+      const start = wallPositions.length / 3;
+      wallPositions.push(
+        x0, roofY, z0,
+        x1, roofY, z1,
+        x1, baseY, z1,
+        x0, baseY, z0,
+      );
+      wallIndices.push(
+        start, start + 1, start + 2,
+        start, start + 2, start + 3,
+      );
+    }
+    rendered += 1;
+  }
+
+  if (!rendered) return null;
+
+  const roofs = new THREE.BufferGeometry();
+  roofs.setAttribute("position", new THREE.Float32BufferAttribute(roofPositions, 3));
+  roofs.setAttribute("uv", new THREE.Float32BufferAttribute(roofUvs, 2));
+  roofs.setIndex(roofIndices);
+  roofs.computeVertexNormals();
+  roofs.computeBoundingSphere();
+
+  const walls = new THREE.BufferGeometry();
+  walls.setAttribute("position", new THREE.Float32BufferAttribute(wallPositions, 3));
+  walls.setIndex(wallIndices);
+  walls.computeVertexNormals();
+  walls.computeBoundingSphere();
+
+  return { roofs, walls, count: rendered };
+}
+
+function BuildingSolids({
+  footprints,
+  terrain,
+  textureUrl,
+  showTexture,
+  wireframe,
+  exaggeration,
+}: {
+  footprints: BuildingFootprint[];
+  terrain: TerrainData;
+  textureUrl: string | null;
+  showTexture: boolean;
+  wireframe: boolean;
+  exaggeration: number;
+}) {
+  const geometry = useMemo(
+    () => createBuildingGeometry(footprints, terrain),
+    [footprints, terrain],
+  );
+  const [roofTexture, setRoofTexture] = useState<THREE.Texture | null>(null);
+
+  useEffect(() => () => {
+    geometry?.roofs.dispose();
+    geometry?.walls.dispose();
+  }, [geometry]);
+
+  useEffect(() => {
+    if (!textureUrl || !showTexture) {
+      setRoofTexture(null);
+      return;
+    }
+    let active = true;
+    let loaded: THREE.Texture | null = null;
+    const loader = new THREE.TextureLoader();
+    loader.setCrossOrigin("anonymous");
+    loader.load(textureUrl, (texture) => {
+      loaded = texture;
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.minFilter = THREE.LinearMipmapLinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+      texture.anisotropy = 16;
+      texture.needsUpdate = true;
+      if (active) setRoofTexture(texture);
+      else texture.dispose();
+    });
+    return () => {
+      active = false;
+      loaded?.dispose();
+    };
+  }, [textureUrl, showTexture]);
+
+  if (!geometry) return null;
+
+  return (
+    <group scale={[1, exaggeration, 1]}>
+      <mesh geometry={geometry.roofs} castShadow receiveShadow raycast={() => undefined}>
+        <meshStandardMaterial
+          map={showTexture ? roofTexture : null}
+          color={showTexture && roofTexture ? "#ffffff" : "#73b79b"}
+          roughness={0.78}
+          metalness={0.04}
+          wireframe={wireframe}
+          polygonOffset
+          polygonOffsetFactor={-2}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+      <mesh geometry={geometry.walls} castShadow receiveShadow raycast={() => undefined}>
+        <meshStandardMaterial
+          color="#737b84"
+          roughness={0.92}
+          metalness={0.02}
+          wireframe={wireframe}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+    </group>
+  );
+}
+
 function extractBounds(geospatial: GeospatialMetadata): [number, number, number, number] | null {
   const { bounds } = geospatial;
   if (Array.isArray(bounds) && bounds.length >= 4 && bounds.slice(0, 4).every((value) => typeof value === "number")) {
@@ -918,6 +1095,7 @@ export default function TerrainViewer({
   const [smoothing, setSmoothing] = useState<SmoothingLevel>("balanced");
   const [detrend, setDetrend] = useState(false);
   const [withSkirt, setWithSkirt] = useState(true);
+  const [showBuildings, setShowBuildings] = useState(true);
   const [wireframe, setWireframe] = useState(false);
   const [exaggeration, setExaggeration] = useState(0.4);
   const [resetKey, setResetKey] = useState(0);
@@ -940,6 +1118,7 @@ export default function TerrainViewer({
       .then((decoded) => {
         if (!active || !decoded) return;
         setSharpGrid({
+          ...depthGrid,
           width: decoded.width,
           height: decoded.height,
           values: decoded.values as unknown as number[],
@@ -955,6 +1134,7 @@ export default function TerrainViewer({
   }, [depthGrid]);
 
   const activeGrid = sharpGrid ?? depthGrid;
+  const buildingFootprints = activeGrid.building_footprints ?? [];
 
   const terrain = useMemo(
     () => createTerrainGeometry(activeGrid, smoothing, detrend, withSkirt, materialMode),
@@ -1076,6 +1256,18 @@ export default function TerrainViewer({
           >
             <Layers size={14} />
             <span>3D Block</span>
+          </button>
+          <button
+            type="button"
+            className={`viewer-control${showBuildings && buildingFootprints.length ? " is-active" : ""}`}
+            onClick={() => setShowBuildings((current) => !current)}
+            disabled={!buildingFootprints.length}
+            aria-pressed={showBuildings}
+            aria-label="Toggle display-only solid building geometry"
+            title="Display-only oriented roof footprints with vertical walls"
+          >
+            <Building2 size={14} />
+            <span>Building solids</span>
           </button>
           <button
             type="button"
@@ -1224,6 +1416,17 @@ export default function TerrainViewer({
             textureLoadKey={textureLoadKey}
           />
 
+          {showBuildings && buildingFootprints.length ? (
+            <BuildingSolids
+              footprints={buildingFootprints}
+              terrain={terrain}
+              textureUrl={textureUrl}
+              showTexture={showTexture}
+              wireframe={wireframe}
+              exaggeration={exaggeration}
+            />
+          ) : null}
+
           {navMode === "orbit" ? (
             <gridHelper args={[14, 28, "#1a4652", "#0c232a"]} position={[0, -0.62, 0]} />
           ) : null}
@@ -1266,7 +1469,9 @@ export default function TerrainViewer({
       )}
 
       <div className="mesh-resolution">
-        Mesh {terrain.columns} × {terrain.rows} · 3D Diorama Block
+        Mesh {terrain.columns} × {terrain.rows}
+        {buildingFootprints.length ? ` · ${buildingFootprints.length} solid building footprints` : ""}
+        {" · 3D Diorama Block"}
       </div>
     </div>
   );
