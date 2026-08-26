@@ -26,6 +26,10 @@ const MAX_MESH_DIMENSION = 256;
 const PERSPECTIVE_CAMERA_POSITION: [number, number, number] = [4.8, 4.2, 5.4];
 const TOPDOWN_CAMERA_POSITION: [number, number, number] = [0, 7.8, 0];
 const HEIGHT_SCALE = 0.55;
+/** Height differences beyond this fraction of the scene spread count as edges. */
+const EDGE_PRESERVE_FRACTION = 0.06;
+/** Quads spanning a larger fraction of the spread are dropped, not stretched. */
+const MAX_STEP_FRACTION = 0.11;
 
 type TextureState = "idle" | "loading" | "loaded" | "failed";
 type CameraPreset = "perspective" | "topdown";
@@ -114,32 +118,54 @@ function sampleBilinear(grid: DepthGrid, u: number, v: number, width: number, he
   return top * (1 - fy) + bottom * fy;
 }
 
-/** Edge-preserving 3x3 Gaussian smoothing filter to remove sensor noise and terracing artifacts. */
+/**
+ * Bilateral 3x3 smoothing: denoises flat ground while preserving depth
+ * discontinuities.
+ *
+ * A plain Gaussian averages across building edges, which is what melts sharp
+ * rooftops into rounded mounds. Weighting each neighbour by how close its
+ * height is to the centre keeps roof-to-ground steps intact.
+ */
 function applySmoothing(samples: Float32Array, cols: number, rows: number, passes: number): void {
   if (passes <= 0) return;
 
   const temp = new Float32Array(samples.length);
+  const spatial = [1, 2, 1, 2, 4, 2, 1, 2, 1];
+
+  // Range sigma is a fraction of the height spread, so the edge threshold
+  // adapts to the scene instead of assuming a fixed unit scale.
+  let low = Number.POSITIVE_INFINITY;
+  let high = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < samples.length; i += 1) {
+    if (samples[i] < low) low = samples[i];
+    if (samples[i] > high) high = samples[i];
+  }
+  const spread = high - low;
+  if (!Number.isFinite(spread) || spread <= 0) return;
+  const rangeSigma = spread * EDGE_PRESERVE_FRACTION;
+  const denominator = 2 * rangeSigma * rangeSigma;
 
   for (let p = 0; p < passes; p += 1) {
     temp.set(samples);
-    for (let r = 0; r < rows; r += 1) {
-      for (let c = 0; c < cols; c += 1) {
+    for (let r = 1; r < rows - 1; r += 1) {
+      for (let c = 1; c < cols - 1; c += 1) {
         const idx = r * cols + c;
-        if (r === 0 || r === rows - 1 || c === 0 || c === cols - 1) {
-          continue;
+        const center = temp[idx];
+        let weightedSum = 0;
+        let weightTotal = 0;
+
+        for (let dr = -1; dr <= 1; dr += 1) {
+          for (let dc = -1; dc <= 1; dc += 1) {
+            const value = temp[(r + dr) * cols + (c + dc)];
+            const difference = value - center;
+            const weight =
+              spatial[(dr + 1) * 3 + (dc + 1)] * Math.exp(-(difference * difference) / denominator);
+            weightedSum += value * weight;
+            weightTotal += weight;
+          }
         }
 
-        const center = temp[idx];
-        const n = temp[(r - 1) * cols + c];
-        const s = temp[(r + 1) * cols + c];
-        const w = temp[r * cols + (c - 1)];
-        const e = temp[r * cols + (c + 1)];
-        const nw = temp[(r - 1) * cols + (c - 1)];
-        const ne = temp[(r - 1) * cols + (c + 1)];
-        const sw = temp[(r + 1) * cols + (c - 1)];
-        const se = temp[(r + 1) * cols + (c + 1)];
-
-        samples[idx] = (center * 4 + (n + s + w + e) * 2 + (nw + ne + sw + se) * 1) / 16;
+        samples[idx] = weightTotal > 0 ? weightedSum / weightTotal : center;
       }
     }
   }
@@ -284,17 +310,33 @@ function createTerrainGeometry(
     }
   }
 
-  // Top Triangles
+  // Top Triangles.
+  //
+  // A quad spanning a large height step is a building wall, not ground. Joining
+  // those corners stretches one triangle from roof to street and reads as a
+  // smooth ramp, which is what rounds off building silhouettes. Dropping them
+  // leaves the skirt and the sharp roof outline instead.
+  const maxStep = range * MAX_STEP_FRACTION;
+  const withinStep = (a: number, b: number) => Math.abs(samples[a] - samples[b]) <= maxStep;
+
   for (let row = 0; row < rows - 1; row += 1) {
     for (let column = 0; column < columns - 1; column += 1) {
       const topLeft = row * columns + column;
       const topRight = topLeft + 1;
       const bottomLeft = (row + 1) * columns + column;
       const bottomRight = bottomLeft + 1;
-      if (validSamples[topLeft] && validSamples[bottomLeft] && validSamples[topRight]) {
+      if (
+        validSamples[topLeft] && validSamples[bottomLeft] && validSamples[topRight] &&
+        withinStep(topLeft, bottomLeft) && withinStep(topLeft, topRight) &&
+        withinStep(bottomLeft, topRight)
+      ) {
         indices.push(topLeft, bottomLeft, topRight);
       }
-      if (validSamples[topRight] && validSamples[bottomLeft] && validSamples[bottomRight]) {
+      if (
+        validSamples[topRight] && validSamples[bottomLeft] && validSamples[bottomRight] &&
+        withinStep(topRight, bottomRight) && withinStep(bottomLeft, bottomRight) &&
+        withinStep(topRight, bottomLeft)
+      ) {
         indices.push(topRight, bottomLeft, bottomRight);
       }
     }

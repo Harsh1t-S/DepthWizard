@@ -92,9 +92,8 @@ def _wait_until_ready(url: str, timeout: float = STARTUP_TIMEOUT_SECONDS) -> boo
 def _open_window(url: str) -> None:
     """Show a native window, falling back to the default browser."""
 
-    try:
-        import webview
-    except ImportError:
+    def _browser_fallback(reason: str) -> None:
+        print(f"Native window unavailable ({reason}); opening a browser.", file=sys.stderr)
         print(f"DepthWizard is running at {url}", flush=True)
         webbrowser.open(url)
         # Nothing else owns the main thread in the browser fallback, so block
@@ -103,10 +102,19 @@ def _open_window(url: str) -> None:
             threading.Event().wait()
         except KeyboardInterrupt:
             pass
-        return
 
-    webview.create_window(APP_TITLE, url, width=1480, height=940, min_size=(1024, 700))
-    webview.start()
+    # A missing GUI backend is not an ImportError: pywebview imports fine and
+    # only fails when start() cannot resolve a platform. Catching just
+    # ImportError leaves the app running with no window and no message.
+    try:
+        import webview
+
+        webview.create_window(APP_TITLE, url, width=1480, height=940, min_size=(1024, 700))
+        webview.start()
+    except ImportError:
+        _browser_fallback("pywebview is not installed")
+    except Exception as exc:  # noqa: BLE001 - any backend failure must still show the UI
+        _browser_fallback(f"{type(exc).__name__}: {exc}")
 
 
 def main(argv: list[str] | None = None) -> int:

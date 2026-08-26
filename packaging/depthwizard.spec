@@ -10,7 +10,11 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+from PyInstaller.utils.hooks import (
+    collect_data_files,
+    collect_dynamic_libs,
+    collect_submodules,
+)
 
 PROJECT_ROOT = Path(SPECPATH).resolve().parent
 
@@ -29,6 +33,16 @@ hiddenimports = [
     "uvicorn.protocols.websockets.auto",
     "uvicorn.lifespan.on",
 ]
+
+# pywebview picks its GUI backend at runtime, so no import statement points at
+# webview.platforms.* and PyInstaller collects none of them. Without the
+# backends the window never opens and the app runs headless.
+for package in ("webview", "clr_loader"):
+    try:
+        hiddenimports += collect_submodules(package)
+        datas += collect_data_files(package)
+    except Exception:
+        pass
 
 # The built UI is the application; without it the window shows only the API
 # landing page. backend.frontend_bundle() looks for it under this exact name.
