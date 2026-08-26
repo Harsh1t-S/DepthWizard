@@ -2,10 +2,20 @@ import { ApiError, type AnalysisResponse, type InferenceQualityMode } from "../t
 
 const configuredUrl = import.meta.env.VITE_API_URL?.trim();
 
-export const API_BASE_URL = (configuredUrl || "http://localhost:8000").replace(/\/+$/, "");
+// Empty means same-origin. The standalone build is served by the FastAPI
+// process itself, and Vite proxies /api and /artifacts in development, so
+// relative paths are correct in both. VITE_API_URL overrides this for a split
+// deployment where the UI and API sit on different hosts.
+export const API_BASE_URL = (configuredUrl || "").replace(/\/+$/, "");
 
 function endpoint(path: string): string {
   return `${API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+/** Absolute base used to resolve artifact URLs; falls back to the page origin. */
+function absoluteBase(): string {
+  if (API_BASE_URL) return `${API_BASE_URL}/`;
+  return typeof window === "undefined" ? "http://localhost/" : `${window.location.origin}/`;
 }
 
 async function parseError(response: Response): Promise<ApiError> {
@@ -82,7 +92,7 @@ export async function analyzeRaster(
     if (error instanceof ApiError || (error instanceof DOMException && error.name === "AbortError")) {
       throw error;
     }
-    throw new ApiError(`Cannot reach the DepthWizard API at ${API_BASE_URL}.`);
+    throw new ApiError(`Cannot reach the DepthWizard API at ${API_BASE_URL || absoluteBase()}.`);
   }
 }
 
@@ -94,7 +104,7 @@ export async function loadDemo(signal?: AbortSignal): Promise<AnalysisResponse> 
     if (error instanceof ApiError || (error instanceof DOMException && error.name === "AbortError")) {
       throw error;
     }
-    throw new ApiError(`Cannot reach the DepthWizard API at ${API_BASE_URL}.`);
+    throw new ApiError(`Cannot reach the DepthWizard API at ${API_BASE_URL || absoluteBase()}.`);
   }
 }
 
@@ -102,7 +112,7 @@ export function resolveApiUrl(value: string | null | undefined): string | null {
   if (!value) return null;
 
   try {
-    return new URL(value, `${API_BASE_URL}/`).toString();
+    return new URL(value, absoluteBase()).toString();
   } catch {
     return value;
   }

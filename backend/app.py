@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,28 @@ def _cors_origins() -> list[str]:
         "https://localhost:5173",
         "https://127.0.0.1:5173",
     ]
+
+
+def frontend_bundle() -> Path | None:
+    """Locate the built UI, or None when only the API should be served.
+
+    Checked in order: an explicit override, the PyInstaller extraction root for
+    a packaged build, and the in-repo Vite output for a source checkout.
+    """
+
+    configured = os.getenv("DEPTHWIZARD_FRONTEND_DIR", "").strip()
+    candidates: list[Path] = []
+    if configured:
+        candidates.append(Path(configured).expanduser())
+    bundled_root = getattr(sys, "_MEIPASS", None)
+    if bundled_root:
+        candidates.append(Path(bundled_root) / "frontend_dist")
+    candidates.append(Path(__file__).resolve().parent.parent / "frontend" / "dist")
+
+    for candidate in candidates:
+        if (candidate / "index.html").is_file():
+            return candidate.resolve()
+    return None
 
 
 def _max_upload_bytes() -> int:
@@ -103,26 +126,31 @@ def create_app(artifact_root: Path | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    @application.get("/", include_in_schema=False)
-    async def index() -> HTMLResponse:
-        # Spaces opens the Space root in an iframe; without this the landing
-        # page is a bare {"detail":"Not Found"} that reads as a failed deploy.
-        return HTMLResponse(
-            "<!doctype html><meta charset=utf-8>"
-            "<title>DepthWizard API</title>"
-            "<style>body{font:16px/1.6 system-ui,sans-serif;max-width:34rem;"
-            "margin:4rem auto;padding:0 1.5rem;background:#0b1620;color:#dce8f0}"
-            "a{color:#6ad19f}code{background:#132434;padding:.15em .4em;border-radius:4px}</style>"
-            "<h1>DepthWizard API</h1>"
-            "<p>Monocular depth on aerial imagery (SIH26175). This host serves the "
-            "backend only; the user interface is deployed separately.</p>"
-            "<ul>"
-            '<li><a href="/api/health">/api/health</a> — service and device status</li>'
-            '<li><a href="/api/demo">/api/demo</a> — precomputed synthetic fixture</li>'
-            '<li><code>POST /api/analyze</code> — multipart image upload</li>'
-            '<li><a href="/docs">/docs</a> — OpenAPI reference</li>'
-            "</ul>"
-        )
+    bundle = frontend_bundle()
+
+    # Registered only for API-only deployments. An explicit route always wins
+    # over the catch-all StaticFiles mount, so defining it unconditionally would
+    # hide the real UI behind this placeholder.
+    if bundle is None:
+
+        @application.get("/", include_in_schema=False)
+        async def index() -> HTMLResponse:
+            return HTMLResponse(
+                "<!doctype html><meta charset=utf-8>"
+                "<title>DepthWizard API</title>"
+                "<style>body{font:16px/1.6 system-ui,sans-serif;max-width:34rem;"
+                "margin:4rem auto;padding:0 1.5rem;background:#0b1620;color:#dce8f0}"
+                "a{color:#6ad19f}code{background:#132434;padding:.15em .4em;border-radius:4px}</style>"
+                "<h1>DepthWizard API</h1>"
+                "<p>Monocular depth on aerial imagery (SIH26175). This host serves the "
+                "backend only; the user interface is deployed separately.</p>"
+                "<ul>"
+                '<li><a href="/api/health">/api/health</a> — service and device status</li>'
+                '<li><a href="/api/demo">/api/demo</a> — precomputed synthetic fixture</li>'
+                '<li><code>POST /api/analyze</code> — multipart image upload</li>'
+                '<li><a href="/docs">/docs</a> — OpenAPI reference</li>'
+                "</ul>"
+            )
 
     @application.get("/api/health", tags=["system"])
     async def health() -> dict[str, Any]:
@@ -208,6 +236,16 @@ def create_app(artifact_root: Path | None = None) -> FastAPI:
         StaticFiles(directory=str(root)),
         name="artifacts",
     )
+
+    # Mounted last so it only receives paths no API route or /artifacts claimed.
+    # html=True serves index.html for unmatched paths, which keeps the single
+    # origin working as one standalone application rather than two servers.
+    if bundle is not None:
+        application.mount(
+            "/",
+            StaticFiles(directory=str(bundle), html=True),
+            name="ui",
+        )
     return application
 
 

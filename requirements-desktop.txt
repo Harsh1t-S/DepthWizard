@@ -1,0 +1,5 @@
+# Standalone desktop application extras, on top of requirements.txt.
+# pywebview renders the UI in the OS webview (Edge WebView2 on Windows);
+# desktop.py falls back to the default browser when it is unavailable.
+pywebview>=5,<7
+pyinstaller>=6.6,<7

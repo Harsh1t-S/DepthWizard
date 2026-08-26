@@ -62,3 +62,8 @@ data/*
 data/sample/*
 !data/sample/README.md
 
+
+# Standalone packaging staging and output
+packaging/hf_cache/
+build/
+dist/
