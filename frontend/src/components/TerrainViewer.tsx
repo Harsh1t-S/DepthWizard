@@ -1,13 +1,17 @@
 import { OrbitControls } from "@react-three/drei";
 import { Canvas, type ThreeEvent, useThree } from "@react-three/fiber";
-import { Expand, Focus, Grid3X3, Image as ImageIcon, Minimize, RotateCcw } from "lucide-react";
-import { type ElementRef, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, Expand, Focus, Grid3X3, Image as ImageIcon, Loader, Minimize, Palette, RefreshCw, RotateCcw } from "lucide-react";
+import { type ElementRef, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { formatNumber } from "../lib/format";
 import type { DepthGrid, GeospatialMetadata } from "../types/api";
 
-const MAX_MESH_DIMENSION = 192;
-const CAMERA_POSITION: [number, number, number] = [5.2, 4.4, 5.8];
+const MAX_MESH_DIMENSION = 256;
+const PERSPECTIVE_CAMERA_POSITION: [number, number, number] = [5.2, 4.4, 5.8];
+const TOPDOWN_CAMERA_POSITION: [number, number, number] = [0, 8.5, 0];
+const HEIGHT_SCALE = 0.6;
+
+type TextureState = "idle" | "loading" | "loaded" | "failed";
 
 interface TerrainViewerProps {
   depthGrid: DepthGrid;
@@ -112,6 +116,8 @@ function createTerrainGeometry(grid: DepthGrid): TerrainData {
   }
 
   const range = maximum - minimum || 1;
+  // Skip re-normalization when backend already normalized values to [0,1]
+  const alreadyNormalized = minimum >= -0.01 && maximum <= 1.01 && range <= 1.02;
   const sourceAspect = dimensions.width / Math.max(1, dimensions.height);
   const width = sourceAspect >= 1 ? 5.6 : 5.6 * sourceAspect;
   const depth = sourceAspect >= 1 ? 5.6 / sourceAspect : 5.6;
@@ -125,10 +131,12 @@ function createTerrainGeometry(grid: DepthGrid): TerrainData {
     for (let column = 0; column < columns; column += 1) {
       const u = column / Math.max(1, columns - 1);
       const index = row * columns + column;
-      const normalized = (samples[index] - minimum) / range;
+      const normalized = alreadyNormalized
+        ? Math.max(0, Math.min(1, samples[index]))
+        : (samples[index] - minimum) / range;
       const color = terrainColor(normalized);
       positions[index * 3] = (u - 0.5) * width;
-      positions[index * 3 + 1] = (normalized - 0.42) * 1.35;
+      positions[index * 3 + 1] = (normalized - 0.5) * HEIGHT_SCALE;
       positions[index * 3 + 2] = (v - 0.5) * depth;
       colors[index * 3] = color.r;
       colors[index * 3 + 1] = color.g;
@@ -219,16 +227,25 @@ function projectPixel(
   };
 }
 
-function CameraControls({ resetKey }: { resetKey: number }) {
+type CameraPreset = "perspective" | "topdown";
+
+function CameraControls({ resetKey, preset }: { resetKey: number; preset: CameraPreset }) {
   const controlsRef = useRef<ElementRef<typeof OrbitControls> | null>(null);
   const { camera } = useThree();
 
   useEffect(() => {
-    camera.position.set(...CAMERA_POSITION);
-    camera.lookAt(0, 0, 0);
-    controlsRef.current?.target.set(0, 0, 0);
-    controlsRef.current?.update();
-  }, [camera, resetKey]);
+    if (preset === "topdown") {
+      camera.position.set(...TOPDOWN_CAMERA_POSITION);
+      camera.lookAt(0, 0, 0);
+      controlsRef.current?.target.set(0, 0, 0);
+      controlsRef.current?.update();
+    } else {
+      camera.position.set(...PERSPECTIVE_CAMERA_POSITION);
+      camera.lookAt(0, 0, 0);
+      controlsRef.current?.target.set(0, 0, 0);
+      controlsRef.current?.update();
+    }
+  }, [camera, resetKey, preset]);
 
   return (
     <OrbitControls
@@ -254,6 +271,8 @@ function TerrainMesh({
   wireframe,
   exaggeration,
   onPointSelected,
+  onTextureStateChange,
+  textureLoadKey,
 }: {
   data: TerrainData;
   grid: DepthGrid;
@@ -265,13 +284,19 @@ function TerrainMesh({
   wireframe: boolean;
   exaggeration: number;
   onPointSelected: (sample: PointSample) => void;
+  onTextureStateChange: (state: TextureState) => void;
+  textureLoadKey: number;
 }) {
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
 
   useEffect(() => {
     setTexture(null);
-    if (!textureUrl) return;
+    if (!textureUrl) {
+      onTextureStateChange("idle");
+      return;
+    }
 
+    onTextureStateChange("loading");
     let active = true;
     let loadedTexture: THREE.Texture | null = null;
     const loader = new THREE.TextureLoader();
@@ -283,12 +308,19 @@ function TerrainMesh({
         nextTexture.colorSpace = THREE.SRGBColorSpace;
         nextTexture.anisotropy = 4;
         nextTexture.needsUpdate = true;
-        if (active) setTexture(nextTexture);
-        else nextTexture.dispose();
+        if (active) {
+          setTexture(nextTexture);
+          onTextureStateChange("loaded");
+        } else {
+          nextTexture.dispose();
+        }
       },
       undefined,
       () => {
-        if (active) setTexture(null);
+        if (active) {
+          setTexture(null);
+          onTextureStateChange("failed");
+        }
       },
     );
 
@@ -296,7 +328,8 @@ function TerrainMesh({
       active = false;
       loadedTexture?.dispose();
     };
-  }, [textureUrl]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [textureUrl, textureLoadKey]);
 
   const handleClick = (event: ThreeEvent<MouseEvent>) => {
     if (!event.uv) return;
@@ -340,12 +373,15 @@ function TerrainMesh({
 export default function TerrainViewer({ depthGrid, textureUrl, geospatial, inputWidth, inputHeight, valueLabel }: TerrainViewerProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const terrain = useMemo(() => createTerrainGeometry(depthGrid), [depthGrid]);
-  const [showTexture, setShowTexture] = useState(Boolean(textureUrl));
+  const [materialMode, setMaterialMode] = useState<"texture" | "height">(textureUrl ? "texture" : "height");
   const [wireframe, setWireframe] = useState(false);
-  const [exaggeration, setExaggeration] = useState(1.35);
+  const [exaggeration, setExaggeration] = useState(0.4);
   const [resetKey, setResetKey] = useState(0);
+  const [cameraPreset, setCameraPreset] = useState<CameraPreset>("perspective");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [sample, setSample] = useState<PointSample | null>(null);
+  const [textureState, setTextureState] = useState<TextureState>("idle");
+  const [textureLoadKey, setTextureLoadKey] = useState(0);
 
   useEffect(() => () => terrain.geometry.dispose(), [terrain]);
 
@@ -356,8 +392,9 @@ export default function TerrainViewer({ depthGrid, textureUrl, geospatial, input
   }, []);
 
   useEffect(() => {
-    setShowTexture(Boolean(textureUrl));
+    setMaterialMode(textureUrl ? "texture" : "height");
     setSample(null);
+    setTextureState(textureUrl ? "loading" : "idle");
   }, [textureUrl, depthGrid]);
 
   const toggleFullscreen = async () => {
@@ -366,21 +403,58 @@ export default function TerrainViewer({ depthGrid, textureUrl, geospatial, input
     else await wrapperRef.current.requestFullscreen();
   };
 
+  const handleRetryTexture = useCallback(() => {
+    setTextureLoadKey((key) => key + 1);
+    setTextureState("loading");
+  }, []);
+
+  const handleTopDown = useCallback(() => {
+    setCameraPreset((current) => (current === "topdown" ? "perspective" : "topdown"));
+  }, []);
+
+  const showTexture = materialMode === "texture";
+  const textureStatusLabel =
+    textureState === "loading" ? "Loading…" :
+    textureState === "loaded" ? "RGB texture" :
+    textureState === "failed" ? "Texture failed" :
+    "RGB texture";
+
   return (
     <div ref={wrapperRef} className={`terrain-viewer${isFullscreen ? " is-fullscreen" : ""}`}>
       <div className="terrain-toolbar" role="group" aria-label="3D terrain controls">
         <div className="terrain-toolbar__group">
           <button
             type="button"
-            className={`viewer-control${showTexture ? " is-active" : ""}`}
-            onClick={() => setShowTexture((current) => !current)}
+            className={`viewer-control${showTexture ? " is-active" : ""}${textureState === "failed" ? " is-error" : ""}`}
+            onClick={() => setMaterialMode("texture")}
             disabled={!textureUrl}
             aria-pressed={showTexture}
-            aria-label="Toggle satellite texture"
+            aria-label="Show RGB texture"
           >
-            <ImageIcon size={15} />
-            <span>Texture</span>
+            {textureState === "loading" ? <Loader size={15} className="spin-icon" /> : <ImageIcon size={15} />}
+            <span>{textureStatusLabel}</span>
           </button>
+          <button
+            type="button"
+            className={`viewer-control${!showTexture ? " is-active" : ""}`}
+            onClick={() => setMaterialMode("height")}
+            aria-pressed={!showTexture}
+            aria-label="Show height colors"
+          >
+            <Palette size={15} />
+            <span>Height colors</span>
+          </button>
+          {textureState === "failed" ? (
+            <button
+              type="button"
+              className="viewer-control viewer-control--retry"
+              onClick={handleRetryTexture}
+              aria-label="Retry texture loading"
+            >
+              <RefreshCw size={14} />
+              <span>Retry</span>
+            </button>
+          ) : null}
           <button
             type="button"
             className={`viewer-control${wireframe ? " is-active" : ""}`}
@@ -396,7 +470,7 @@ export default function TerrainViewer({ depthGrid, textureUrl, geospatial, input
           <span>Height</span>
           <input
             type="range"
-            min="0.25"
+            min="0.1"
             max="3"
             step="0.05"
             value={exaggeration}
@@ -406,7 +480,16 @@ export default function TerrainViewer({ depthGrid, textureUrl, geospatial, input
           <output>{exaggeration.toFixed(2)}×</output>
         </label>
         <div className="terrain-toolbar__group terrain-toolbar__group--end">
-          <button type="button" className="viewer-control viewer-control--icon" onClick={() => setResetKey((key) => key + 1)} aria-label="Reset 3D camera">
+          <button
+            type="button"
+            className={`viewer-control viewer-control--icon${cameraPreset === "topdown" ? " is-active" : ""}`}
+            onClick={handleTopDown}
+            aria-label={cameraPreset === "topdown" ? "Switch to perspective view" : "Switch to top-down view"}
+            title="Top-down view"
+          >
+            <ArrowDown size={15} />
+          </button>
+          <button type="button" className="viewer-control viewer-control--icon" onClick={() => { setResetKey((key) => key + 1); setCameraPreset("perspective"); }} aria-label="Reset 3D camera">
             <RotateCcw size={15} />
           </button>
           <button type="button" className="viewer-control viewer-control--icon" onClick={toggleFullscreen} aria-label={isFullscreen ? "Exit fullscreen" : "View fullscreen"}>
@@ -417,7 +500,7 @@ export default function TerrainViewer({ depthGrid, textureUrl, geospatial, input
 
       <div className="terrain-canvas" role="img" aria-label="Interactive predicted terrain reconstruction">
         <Canvas
-          camera={{ position: CAMERA_POSITION, fov: 43, near: 0.1, far: 100 }}
+          camera={{ position: PERSPECTIVE_CAMERA_POSITION, fov: 43, near: 0.1, far: 100 }}
           dpr={[1, 1.7]}
           frameloop="demand"
           gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
@@ -439,9 +522,11 @@ export default function TerrainViewer({ depthGrid, textureUrl, geospatial, input
             wireframe={wireframe}
             exaggeration={exaggeration}
             onPointSelected={setSample}
+            onTextureStateChange={setTextureState}
+            textureLoadKey={textureLoadKey}
           />
-          <gridHelper args={[12, 24, "#1c5160", "#102932"]} position={[0, -1.05, 0]} />
-          <CameraControls resetKey={resetKey} />
+          <gridHelper args={[12, 24, "#1c5160", "#102932"]} position={[0, -0.55, 0]} />
+          <CameraControls resetKey={resetKey} preset={cameraPreset} />
         </Canvas>
       </div>
 

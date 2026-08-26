@@ -318,6 +318,85 @@ alignment. As a last resort for differently sized ungeoreferenced rasters, it
 performs a numeric resize and reports that fact; such results need especially
 careful interpretation.
 
+## Deployment
+
+The recommended deployment architecture separates the GPU backend from the
+static frontend:
+
+- **Backend (GPU):** [Modal](https://modal.com) with a T4 GPU, scales to zero
+- **Frontend:** [Vercel](https://vercel.com) serving the Vite production build
+
+### Backend — Modal
+
+1. Install Modal and authenticate:
+
+   ```bash
+   pip install modal
+   modal setup
+   ```
+
+2. (Optional) Pre-warm the model cache to reduce first cold start:
+
+   ```bash
+   modal run deploy_modal.py::warm_model_cache
+   ```
+
+3. Deploy the backend:
+
+   ```bash
+   modal deploy deploy_modal.py
+   ```
+
+   Modal prints the public HTTPS URL (e.g.
+   `https://your-workspace--depthwizard-web.modal.run`).
+
+4. Note the URL — the frontend needs it as `VITE_API_URL`.
+
+The backend uses a persistent Modal Volume for Hugging Face model weights, a
+T4 GPU, and scales to zero when idle. CORS is configured to allow any origin.
+See [`deploy_modal.py`](deploy_modal.py) for the full entrypoint.
+
+### Frontend — Vercel
+
+1. Install the Vercel CLI:
+
+   ```bash
+   npm i -g vercel
+   ```
+
+2. Build the frontend with the deployed backend URL:
+
+   ```bash
+   cd frontend
+   VITE_API_URL=https://your-workspace--depthwizard-web.modal.run npm run build
+   ```
+
+   On PowerShell:
+
+   ```powershell
+   cd frontend
+   $env:VITE_API_URL = "https://your-workspace--depthwizard-web.modal.run"
+   npm run build
+   ```
+
+3. Deploy:
+
+   ```bash
+   vercel --prod
+   ```
+
+   Or connect the repository to Vercel and set `VITE_API_URL` as an environment
+   variable in the Vercel dashboard. Set the root directory to `frontend` and
+   the build command to `npm run build`.
+
+### Verify
+
+After both services are deployed, open the Vercel URL and:
+
+1. Click **Load Demo Scene** to verify the API connection.
+2. Upload an image and run analysis to verify GPU inference end-to-end.
+3. Switch to the 3D tab and confirm the textured terrain renders correctly.
+
 ## Limitations
 
 - Monocular relative depth is ambiguous in absolute scale and shift and is not

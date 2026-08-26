@@ -282,6 +282,12 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .point-inspector strong { color: #c9d8dd; font: 400 8px var(--mono); }
 .terrain-hint { position: absolute; z-index: 4; right: 12px; bottom: 13px; color: #607985; font: 400 7px var(--mono); }
 .mesh-resolution { position: absolute; z-index: 4; top: 59px; right: 11px; color: #54717b; font: 400 7px var(--mono); }
+.viewer-control.is-error { border-color: #6b3333; color: var(--red); }
+.viewer-control.is-error:hover { color: var(--red); background: #1e1515; }
+.viewer-control--retry { gap: 4px; color: var(--amber); border-left: 0; }
+.viewer-control--retry:hover { color: var(--amber); background: #1e1a11; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin-icon { animation: spin 1.1s linear infinite; }
 
 .notice-list { margin-top: 10px; display: grid; gap: 5px; }
 .notice-list > div { display: flex; align-items: flex-start; gap: 7px; border-left: 2px solid #2c6570; background: #0a171e; color: #859ba4; padding: 7px 9px; font-size: 8.5px; line-height: 1.45; }
