@@ -62,10 +62,18 @@ if (weights / "hub").is_dir():
 
 # rasterio and pyproj carry GDAL/PROJ data files that must travel with the
 # binary, or opening any GeoTIFF fails at runtime with a projection error.
+#
+# Their submodules must be collected explicitly as well. rasterio imports
+# several of them dynamically -- rasterio.serde among them -- so static
+# analysis sees no reference and leaves them out. The result is a build that
+# starts, serves, and runs inference happily on a JPEG, then fails every
+# GeoTIFF with "No module named 'rasterio.serde'". GeoTIFF input is the
+# georeferenced path, so this silently removes half the product.
 for package in ("rasterio", "pyproj"):
     try:
         datas += collect_data_files(package)
         binaries += collect_dynamic_libs(package)
+        hiddenimports += collect_submodules(package)
     except Exception:
         pass
 

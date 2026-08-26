@@ -166,7 +166,14 @@ the full-resolution prediction.
 4. **Forested terrain is ~2× worse** than built-up.
 5. **Segmentation costs ~10 s** on a 1024 tile. Disable with
    `DEPTHWIZARD_FLATTEN_ROOFS=0` for a latency-sensitive demo.
-6. **No SSAO.** `@react-three/postprocessing@3.1.0` requires `three >= 0.182`;
+6. **The packaged build could not read GeoTIFFs** until 2026-08-27. PyInstaller
+   missed `rasterio.serde` and other dynamically imported submodules, so the exe
+   started, served, and ran inference on a JPEG, then failed every GeoTIFF with
+   `No module named 'rasterio.serde'` — silently removing the entire
+   georeferenced path. Fixed by adding `collect_submodules` for rasterio and
+   pyproj to the spec. **Any packaged-build check must use a GeoTIFF**; a JPEG
+   passes straight through the gap.
+7. **No SSAO.** `@react-three/postprocessing@3.1.0` requires `three >= 0.182`;
    the project is on `0.179.1`. Upgrading three risks the working viewer, so
    this was deliberately skipped. It remains the largest cheap realism win if
    someone wants to take the upgrade on.
