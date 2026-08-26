@@ -1,17 +1,34 @@
 import { OrbitControls } from "@react-three/drei";
 import { Canvas, type ThreeEvent, useThree } from "@react-three/fiber";
-import { ArrowDown, Expand, Focus, Grid3X3, Image as ImageIcon, Loader, Minimize, Palette, RefreshCw, RotateCcw } from "lucide-react";
+import {
+  ArrowDown,
+  Expand,
+  Focus,
+  Grid3X3,
+  Image as ImageIcon,
+  Layers,
+  Loader,
+  Minimize,
+  Palette,
+  Play,
+  RefreshCw,
+  RotateCcw,
+  Sparkles,
+  Wand2,
+} from "lucide-react";
 import { type ElementRef, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { formatNumber } from "../lib/format";
 import type { DepthGrid, GeospatialMetadata } from "../types/api";
 
 const MAX_MESH_DIMENSION = 256;
-const PERSPECTIVE_CAMERA_POSITION: [number, number, number] = [5.2, 4.4, 5.8];
-const TOPDOWN_CAMERA_POSITION: [number, number, number] = [0, 8.5, 0];
-const HEIGHT_SCALE = 0.6;
+const PERSPECTIVE_CAMERA_POSITION: [number, number, number] = [4.8, 4.2, 5.4];
+const TOPDOWN_CAMERA_POSITION: [number, number, number] = [0, 7.8, 0];
+const HEIGHT_SCALE = 0.55;
 
 type TextureState = "idle" | "loading" | "loaded" | "failed";
+type CameraPreset = "perspective" | "topdown";
+type SmoothingLevel = "none" | "subtle" | "balanced" | "smooth";
 
 interface TerrainViewerProps {
   depthGrid: DepthGrid;
@@ -69,12 +86,97 @@ function isGridValueValid(grid: DepthGrid, x: number, y: number): boolean {
   return Boolean((mask as boolean[])[y * grid.width + x]);
 }
 
+/** Bilinear subpixel sampling for smooth continuous height interpolation (no terracing). */
+function sampleBilinear(grid: DepthGrid, u: number, v: number, width: number, height: number): number {
+  const gx = u * (width - 1);
+  const gy = v * (height - 1);
+  const x0 = Math.max(0, Math.min(width - 1, Math.floor(gx)));
+  const x1 = Math.max(0, Math.min(width - 1, Math.ceil(gx)));
+  const y0 = Math.max(0, Math.min(height - 1, Math.floor(gy)));
+  const y1 = Math.max(0, Math.min(height - 1, Math.ceil(gy)));
+  const fx = gx - x0;
+  const fy = gy - y0;
+
+  const v00 = getGridValue(grid, x0, y0);
+  const v10 = getGridValue(grid, x1, y0);
+  const v01 = getGridValue(grid, x0, y1);
+  const v11 = getGridValue(grid, x1, y1);
+
+  const top = v00 * (1 - fx) + v10 * fx;
+  const bottom = v01 * (1 - fx) + v11 * fx;
+  return top * (1 - fy) + bottom * fy;
+}
+
+/** Edge-preserving 3x3 Gaussian smoothing filter to remove sensor noise and terracing artifacts. */
+function applySmoothing(samples: Float32Array, cols: number, rows: number, passes: number): void {
+  if (passes <= 0) return;
+
+  const temp = new Float32Array(samples.length);
+
+  for (let p = 0; p < passes; p += 1) {
+    temp.set(samples);
+    for (let r = 0; r < rows; r += 1) {
+      for (let c = 0; c < cols; c += 1) {
+        const idx = r * cols + c;
+        if (r === 0 || r === rows - 1 || c === 0 || c === cols - 1) {
+          continue;
+        }
+
+        const center = temp[idx];
+        const n = temp[(r - 1) * cols + c];
+        const s = temp[(r + 1) * cols + c];
+        const w = temp[r * cols + (c - 1)];
+        const e = temp[r * cols + (c + 1)];
+        const nw = temp[(r - 1) * cols + (c - 1)];
+        const ne = temp[(r - 1) * cols + (c + 1)];
+        const sw = temp[(r + 1) * cols + (c - 1)];
+        const se = temp[(r + 1) * cols + (c + 1)];
+
+        samples[idx] = (center * 4 + (n + s + w + e) * 2 + (nw + ne + sw + se) * 1) / 16;
+      }
+    }
+  }
+}
+
+/** Optional local relief detrending (removes dominant perspective tilt from monocular models). */
+function applyDetrend(samples: Float32Array, cols: number, rows: number): void {
+  let sumX = 0, sumY = 0, sumZ = 0, sumXX = 0, sumYY = 0, sumXY = 0, sumXZ = 0, sumYZ = 0;
+  const n = cols * rows;
+
+  for (let r = 0; r < rows; r += 1) {
+    const y = r / (rows - 1) - 0.5;
+    for (let c = 0; c < cols; c += 1) {
+      const x = c / (cols - 1) - 0.5;
+      const z = samples[r * cols + c];
+      sumX += x; sumY += y; sumZ += z;
+      sumXX += x * x; sumYY += y * y; sumXY += x * y;
+      sumXZ += x * z; sumYZ += y * z;
+    }
+  }
+
+  const denomX = sumXX || 1;
+  const denomY = sumYY || 1;
+  const slopeX = (sumXZ - (sumX * sumZ) / n) / denomX;
+  const slopeY = (sumYZ - (sumY * sumZ) / n) / denomY;
+
+  for (let r = 0; r < rows; r += 1) {
+    const y = r / (rows - 1) - 0.5;
+    for (let c = 0; c < cols; c += 1) {
+      const x = c / (cols - 1) - 0.5;
+      const idx = r * cols + c;
+      const trend = slopeX * x + slopeY * y;
+      samples[idx] = samples[idx] - trend * 0.7;
+    }
+  }
+}
+
 function terrainColor(normalized: number): THREE.Color {
   const stops = [
-    { at: 0, color: new THREE.Color("#10263d") },
-    { at: 0.34, color: new THREE.Color("#176a80") },
-    { at: 0.68, color: new THREE.Color("#4cc7a8") },
-    { at: 1, color: new THREE.Color("#f0cf72") },
+    { at: 0.0, color: new THREE.Color("#0c2033") },
+    { at: 0.22, color: new THREE.Color("#15536e") },
+    { at: 0.48, color: new THREE.Color("#2a8c88") },
+    { at: 0.74, color: new THREE.Color("#6ad19f") },
+    { at: 1.0, color: new THREE.Color("#fae28c") },
   ];
   const upperIndex = stops.findIndex((stop) => normalized <= stop.at);
   if (upperIndex <= 0) return stops[0].color.clone();
@@ -84,7 +186,12 @@ function terrainColor(normalized: number): THREE.Color {
   return lower.color.clone().lerp(upper.color, amount);
 }
 
-function createTerrainGeometry(grid: DepthGrid): TerrainData {
+function createTerrainGeometry(
+  grid: DepthGrid,
+  smoothing: SmoothingLevel,
+  detrend: boolean,
+  withSkirt: boolean,
+): TerrainData {
   const dimensions = getGridDimensions(grid);
   const columns = Math.min(MAX_MESH_DIMENSION, dimensions.width);
   const rows = Math.min(MAX_MESH_DIMENSION, dimensions.height);
@@ -94,14 +201,15 @@ function createTerrainGeometry(grid: DepthGrid): TerrainData {
   let maximum = Number.NEGATIVE_INFINITY;
 
   for (let row = 0; row < rows; row += 1) {
-    const sourceY = Math.round((row / Math.max(1, rows - 1)) * (dimensions.height - 1));
+    const v = row / Math.max(1, rows - 1);
     for (let column = 0; column < columns; column += 1) {
-      const sourceX = Math.round((column / Math.max(1, columns - 1)) * (dimensions.width - 1));
-      const rawValue = getGridValue(grid, sourceX, sourceY);
-      const value = Number.isFinite(rawValue) ? rawValue : 0;
+      const u = column / Math.max(1, columns - 1);
+      const value = sampleBilinear(grid, u, v, dimensions.width, dimensions.height);
       const index = row * columns + column;
-      const valid = Number.isFinite(rawValue) && isGridValueValid(grid, sourceX, sourceY);
-      samples[index] = value;
+      const sourceX = Math.round(u * (dimensions.width - 1));
+      const sourceY = Math.round(v * (dimensions.height - 1));
+      const valid = Number.isFinite(value) && isGridValueValid(grid, sourceX, sourceY);
+      samples[index] = Number.isFinite(value) ? value : 0;
       validSamples[index] = valid ? 1 : 0;
       if (valid) {
         minimum = Math.min(minimum, value);
@@ -115,17 +223,35 @@ function createTerrainGeometry(grid: DepthGrid): TerrainData {
     maximum = 1;
   }
 
+  // Apply smoothing
+  const passes = smoothing === "none" ? 0 : smoothing === "subtle" ? 1 : smoothing === "balanced" ? 2 : 4;
+  if (passes > 0) {
+    applySmoothing(samples, columns, rows, passes);
+  }
+
+  // Optional detrending
+  if (detrend) {
+    applyDetrend(samples, columns, rows);
+  }
+
   const range = maximum - minimum || 1;
-  // Skip re-normalization when backend already normalized values to [0,1]
   const alreadyNormalized = minimum >= -0.01 && maximum <= 1.01 && range <= 1.02;
   const sourceAspect = dimensions.width / Math.max(1, dimensions.height);
   const width = sourceAspect >= 1 ? 5.6 : 5.6 * sourceAspect;
   const depth = sourceAspect >= 1 ? 5.6 / sourceAspect : 5.6;
-  const positions = new Float32Array(columns * rows * 3);
-  const colors = new Float32Array(columns * rows * 3);
-  const uvs = new Float32Array(columns * rows * 2);
+
+  const topVertexCount = columns * rows;
+  const skirtPerimeterCount = columns * 2 + (rows - 2) * 2;
+  const totalVertices = withSkirt ? topVertexCount + skirtPerimeterCount * 4 + 4 : topVertexCount;
+
+  const positions = new Float32Array(totalVertices * 3);
+  const colors = new Float32Array(totalVertices * 3);
+  const uvs = new Float32Array(totalVertices * 2);
   const indices: number[] = [];
 
+  const baseDepthY = -0.55 * HEIGHT_SCALE - 0.25;
+
+  // 1. Top Surface
   for (let row = 0; row < rows; row += 1) {
     const v = row / Math.max(1, rows - 1);
     for (let column = 0; column < columns; column += 1) {
@@ -133,19 +259,23 @@ function createTerrainGeometry(grid: DepthGrid): TerrainData {
       const index = row * columns + column;
       const normalized = alreadyNormalized
         ? Math.max(0, Math.min(1, samples[index]))
-        : (samples[index] - minimum) / range;
+        : Math.max(0, Math.min(1, (samples[index] - minimum) / range));
       const color = terrainColor(normalized);
+
       positions[index * 3] = (u - 0.5) * width;
       positions[index * 3 + 1] = (normalized - 0.5) * HEIGHT_SCALE;
       positions[index * 3 + 2] = (v - 0.5) * depth;
+
       colors[index * 3] = color.r;
       colors[index * 3 + 1] = color.g;
       colors[index * 3 + 2] = color.b;
+
       uvs[index * 2] = u;
       uvs[index * 2 + 1] = 1 - v;
     }
   }
 
+  // Top Triangles
   for (let row = 0; row < rows - 1; row += 1) {
     for (let column = 0; column < columns - 1; column += 1) {
       const topLeft = row * columns + column;
@@ -159,6 +289,73 @@ function createTerrainGeometry(grid: DepthGrid): TerrainData {
         indices.push(topRight, bottomLeft, bottomRight);
       }
     }
+  }
+
+  // 2. Solid 3D Base Skirt
+  if (withSkirt) {
+    let skirtVIdx = topVertexCount;
+    const skirtColor = new THREE.Color("#0c1b26");
+
+    const perimeterIndices: number[] = [];
+    for (let c = 0; c < columns; c += 1) perimeterIndices.push(0 * columns + c);
+    for (let r = 1; r < rows; r += 1) perimeterIndices.push(r * columns + (columns - 1));
+    for (let c = columns - 2; c >= 0; c -= 1) perimeterIndices.push((rows - 1) * columns + c);
+    for (let r = rows - 2; r > 0; r -= 1) perimeterIndices.push(r * columns + 0);
+
+    const perimeterLen = perimeterIndices.length;
+
+    for (let i = 0; i < perimeterLen; i += 1) {
+      const topIdx = perimeterIndices[i];
+      const nextTopIdx = perimeterIndices[(i + 1) % perimeterLen];
+
+      const topX = positions[topIdx * 3];
+      const topY = positions[topIdx * 3 + 1];
+      const topZ = positions[topIdx * 3 + 2];
+
+      const nextTopX = positions[nextTopIdx * 3];
+      const nextTopY = positions[nextTopIdx * 3 + 1];
+      const nextTopZ = positions[nextTopIdx * 3 + 2];
+
+      const vTopA = skirtVIdx++;
+      const vBotA = skirtVIdx++;
+      const vTopB = skirtVIdx++;
+      const vBotB = skirtVIdx++;
+
+      positions[vTopA * 3] = topX; positions[vTopA * 3 + 1] = topY; positions[vTopA * 3 + 2] = topZ;
+      positions[vBotA * 3] = topX; positions[vBotA * 3 + 1] = baseDepthY; positions[vBotA * 3 + 2] = topZ;
+      positions[vTopB * 3] = nextTopX; positions[vTopB * 3 + 1] = nextTopY; positions[vTopB * 3 + 2] = nextTopZ;
+      positions[vBotB * 3] = nextTopX; positions[vBotB * 3 + 1] = baseDepthY; positions[vBotB * 3 + 2] = nextTopZ;
+
+      for (const v of [vTopA, vBotA, vTopB, vBotB]) {
+        colors[v * 3] = skirtColor.r;
+        colors[v * 3 + 1] = skirtColor.g;
+        colors[v * 3 + 2] = skirtColor.b;
+        uvs[v * 2] = 0;
+        uvs[v * 2 + 1] = 0;
+      }
+
+      indices.push(vTopA, vBotA, vTopB);
+      indices.push(vTopB, vBotA, vBotB);
+    }
+
+    // Bottom Cap
+    const b0 = skirtVIdx++;
+    const b1 = skirtVIdx++;
+    const b2 = skirtVIdx++;
+    const b3 = skirtVIdx++;
+
+    positions[b0 * 3] = -width / 2; positions[b0 * 3 + 1] = baseDepthY; positions[b0 * 3 + 2] = -depth / 2;
+    positions[b1 * 3] = width / 2;  positions[b1 * 3 + 1] = baseDepthY; positions[b1 * 3 + 2] = -depth / 2;
+    positions[b2 * 3] = width / 2;  positions[b2 * 3 + 1] = baseDepthY; positions[b2 * 3 + 2] = depth / 2;
+    positions[b3 * 3] = -width / 2; positions[b3 * 3 + 1] = baseDepthY; positions[b3 * 3 + 2] = depth / 2;
+
+    for (const v of [b0, b1, b2, b3]) {
+      colors[v * 3] = 0.05; colors[v * 3 + 1] = 0.09; colors[v * 3 + 2] = 0.12;
+      uvs[v * 2] = 0; uvs[v * 2 + 1] = 0;
+    }
+
+    indices.push(b0, b2, b1);
+    indices.push(b0, b3, b2);
   }
 
   const geometry = new THREE.BufferGeometry();
@@ -196,17 +393,12 @@ function projectPixel(
   inputHeight: number,
   geospatial: GeospatialMetadata | null,
 ): Pick<PointSample, "mapX" | "mapY" | "coordinateKind"> {
-  if (
-    !geospatial
-    || !geospatial.crs
-    || geospatial.valid_for_dsm_export !== true
-  ) return {};
+  if (!geospatial || !geospatial.crs || geospatial.valid_for_dsm_export !== true) return {};
   const transform = geospatial.transform;
   let mapX: number | undefined;
   let mapY: number | undefined;
 
   if (Array.isArray(transform) && transform.length >= 6 && transform.slice(0, 6).every(Number.isFinite)) {
-    // Rasterio affine convention: x = a·col + b·row + c, y = d·col + e·row + f.
     mapX = transform[0] * pixelX + transform[1] * pixelY + transform[2];
     mapY = transform[3] * pixelX + transform[4] * pixelY + transform[5];
   } else {
@@ -227,9 +419,15 @@ function projectPixel(
   };
 }
 
-type CameraPreset = "perspective" | "topdown";
-
-function CameraControls({ resetKey, preset }: { resetKey: number; preset: CameraPreset }) {
+function CameraControls({
+  resetKey,
+  preset,
+  autoRotate,
+}: {
+  resetKey: number;
+  preset: CameraPreset;
+  autoRotate: boolean;
+}) {
   const controlsRef = useRef<ElementRef<typeof OrbitControls> | null>(null);
   const { camera } = useThree();
 
@@ -252,10 +450,12 @@ function CameraControls({ resetKey, preset }: { resetKey: number; preset: Camera
       ref={controlsRef}
       makeDefault
       enableDamping
-      dampingFactor={0.075}
-      minDistance={2.7}
-      maxDistance={13}
-      maxPolarAngle={Math.PI / 2.02}
+      dampingFactor={0.06}
+      minDistance={2.4}
+      maxDistance={14}
+      maxPolarAngle={Math.PI / 2.05}
+      autoRotate={autoRotate}
+      autoRotateSpeed={0.85}
     />
   );
 }
@@ -306,7 +506,12 @@ function TerrainMesh({
       (nextTexture) => {
         loadedTexture = nextTexture;
         nextTexture.colorSpace = THREE.SRGBColorSpace;
-        nextTexture.anisotropy = 4;
+        nextTexture.generateMipmaps = true;
+        nextTexture.minFilter = THREE.LinearMipmapLinearFilter;
+        nextTexture.magFilter = THREE.LinearFilter;
+        nextTexture.anisotropy = 16;
+        nextTexture.wrapS = THREE.ClampToEdgeWrapping;
+        nextTexture.wrapT = THREE.ClampToEdgeWrapping;
         nextTexture.needsUpdate = true;
         if (active) {
           setTexture(nextTexture);
@@ -362,26 +567,41 @@ function TerrainMesh({
         map={hasTexture ? texture : null}
         vertexColors={!hasTexture}
         wireframe={wireframe}
-        roughness={0.78}
-        metalness={0.04}
+        roughness={0.82}
+        metalness={0.06}
         side={THREE.DoubleSide}
       />
     </mesh>
   );
 }
 
-export default function TerrainViewer({ depthGrid, textureUrl, geospatial, inputWidth, inputHeight, valueLabel }: TerrainViewerProps) {
+export default function TerrainViewer({
+  depthGrid,
+  textureUrl,
+  geospatial,
+  inputWidth,
+  inputHeight,
+  valueLabel,
+}: TerrainViewerProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const terrain = useMemo(() => createTerrainGeometry(depthGrid), [depthGrid]);
   const [materialMode, setMaterialMode] = useState<"texture" | "height">(textureUrl ? "texture" : "height");
+  const [smoothing, setSmoothing] = useState<SmoothingLevel>("balanced");
+  const [detrend, setDetrend] = useState(false);
+  const [withSkirt, setWithSkirt] = useState(true);
   const [wireframe, setWireframe] = useState(false);
   const [exaggeration, setExaggeration] = useState(0.4);
   const [resetKey, setResetKey] = useState(0);
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>("perspective");
+  const [autoRotate, setAutoRotate] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [sample, setSample] = useState<PointSample | null>(null);
   const [textureState, setTextureState] = useState<TextureState>("idle");
   const [textureLoadKey, setTextureLoadKey] = useState(0);
+
+  const terrain = useMemo(
+    () => createTerrainGeometry(depthGrid, smoothing, detrend, withSkirt),
+    [depthGrid, smoothing, detrend, withSkirt],
+  );
 
   useEffect(() => () => terrain.geometry.dispose(), [terrain]);
 
@@ -412,6 +632,15 @@ export default function TerrainViewer({ depthGrid, textureUrl, geospatial, input
     setCameraPreset((current) => (current === "topdown" ? "perspective" : "topdown"));
   }, []);
 
+  const cycleSmoothing = () => {
+    setSmoothing((current) => {
+      if (current === "none") return "subtle";
+      if (current === "subtle") return "balanced";
+      if (current === "balanced") return "smooth";
+      return "none";
+    });
+  };
+
   const showTexture = materialMode === "texture";
   const textureStatusLabel =
     textureState === "loading" ? "Loading…" :
@@ -429,9 +658,10 @@ export default function TerrainViewer({ depthGrid, textureUrl, geospatial, input
             onClick={() => setMaterialMode("texture")}
             disabled={!textureUrl}
             aria-pressed={showTexture}
-            aria-label="Show RGB texture"
+            aria-label="Show RGB satellite texture"
+            title="Satellite photorealistic texture"
           >
-            {textureState === "loading" ? <Loader size={15} className="spin-icon" /> : <ImageIcon size={15} />}
+            {textureState === "loading" ? <Loader size={14} className="spin-icon" /> : <ImageIcon size={14} />}
             <span>{textureStatusLabel}</span>
           </button>
           <button
@@ -439,9 +669,10 @@ export default function TerrainViewer({ depthGrid, textureUrl, geospatial, input
             className={`viewer-control${!showTexture ? " is-active" : ""}`}
             onClick={() => setMaterialMode("height")}
             aria-pressed={!showTexture}
-            aria-label="Show height colors"
+            aria-label="Show height elevation colormap"
+            title="Elevation color gradient"
           >
-            <Palette size={15} />
+            <Palette size={14} />
             <span>Height colors</span>
           </button>
           {textureState === "failed" ? (
@@ -451,27 +682,61 @@ export default function TerrainViewer({ depthGrid, textureUrl, geospatial, input
               onClick={handleRetryTexture}
               aria-label="Retry texture loading"
             >
-              <RefreshCw size={14} />
+              <RefreshCw size={13} />
               <span>Retry</span>
             </button>
           ) : null}
+          <button
+            type="button"
+            className={`viewer-control${smoothing !== "none" ? " is-active" : ""}`}
+            onClick={cycleSmoothing}
+            aria-label="Cycle terrain surface smoothing filter"
+            title={`Surface Filter: ${smoothing.toUpperCase()} (Click to toggle smoothing level)`}
+          >
+            <Sparkles size={14} />
+            <span>Smooth: {smoothing}</span>
+          </button>
+          <button
+            type="button"
+            className={`viewer-control${detrend ? " is-active" : ""}`}
+            onClick={() => setDetrend((v) => !v)}
+            aria-pressed={detrend}
+            aria-label="Toggle local relief detrending filter"
+            title="Remove perspective tilt / slope"
+          >
+            <Wand2 size={14} />
+            <span>Detrend</span>
+          </button>
+          <button
+            type="button"
+            className={`viewer-control${withSkirt ? " is-active" : ""}`}
+            onClick={() => setWithSkirt((v) => !v)}
+            aria-pressed={withSkirt}
+            aria-label="Toggle solid terrain 3D block base"
+            title="Solid 3D block base"
+          >
+            <Layers size={14} />
+            <span>3D Block</span>
+          </button>
           <button
             type="button"
             className={`viewer-control${wireframe ? " is-active" : ""}`}
             onClick={() => setWireframe((current) => !current)}
             aria-pressed={wireframe}
             aria-label="Toggle terrain wireframe"
+            title="Show triangular polygon mesh"
           >
-            <Grid3X3 size={15} />
+            <Grid3X3 size={14} />
             <span>Wireframe</span>
           </button>
         </div>
-        <label className="exaggeration-control">
-          <span>Height</span>
+
+        <label className="exaggeration-control" title="Adjust 3D height scale">
+          <span>Relief</span>
           <input
             type="range"
             min="0.1"
-            max="3"
+            max="2.5"
             step="0.05"
             value={exaggeration}
             onChange={(event) => setExaggeration(Number(event.target.value))}
@@ -479,38 +744,75 @@ export default function TerrainViewer({ depthGrid, textureUrl, geospatial, input
           />
           <output>{exaggeration.toFixed(2)}×</output>
         </label>
+
         <div className="terrain-toolbar__group terrain-toolbar__group--end">
+          <button
+            type="button"
+            className={`viewer-control viewer-control--icon${autoRotate ? " is-active" : ""}`}
+            onClick={() => setAutoRotate((v) => !v)}
+            aria-label="Auto-rotate 3D model"
+            title="Cinematic Orbit / Auto-rotate"
+          >
+            <Play size={14} />
+          </button>
           <button
             type="button"
             className={`viewer-control viewer-control--icon${cameraPreset === "topdown" ? " is-active" : ""}`}
             onClick={handleTopDown}
             aria-label={cameraPreset === "topdown" ? "Switch to perspective view" : "Switch to top-down view"}
-            title="Top-down view"
+            title="Top-down orthographic view"
           >
-            <ArrowDown size={15} />
+            <ArrowDown size={14} />
           </button>
-          <button type="button" className="viewer-control viewer-control--icon" onClick={() => { setResetKey((key) => key + 1); setCameraPreset("perspective"); }} aria-label="Reset 3D camera">
-            <RotateCcw size={15} />
+          <button
+            type="button"
+            className="viewer-control viewer-control--icon"
+            onClick={() => {
+              setResetKey((key) => key + 1);
+              setCameraPreset("perspective");
+              setAutoRotate(false);
+            }}
+            aria-label="Reset 3D camera"
+            title="Reset view"
+          >
+            <RotateCcw size={14} />
           </button>
-          <button type="button" className="viewer-control viewer-control--icon" onClick={toggleFullscreen} aria-label={isFullscreen ? "Exit fullscreen" : "View fullscreen"}>
-            {isFullscreen ? <Minimize size={15} /> : <Expand size={15} />}
+          <button
+            type="button"
+            className="viewer-control viewer-control--icon"
+            onClick={toggleFullscreen}
+            aria-label={isFullscreen ? "Exit fullscreen" : "View fullscreen"}
+            title="Fullscreen"
+          >
+            {isFullscreen ? <Minimize size={14} /> : <Expand size={14} />}
           </button>
         </div>
       </div>
 
-      <div className="terrain-canvas" role="img" aria-label="Interactive predicted terrain reconstruction">
+      <div className="terrain-canvas" role="img" aria-label="Interactive photorealistic predicted terrain reconstruction">
         <Canvas
-          camera={{ position: PERSPECTIVE_CAMERA_POSITION, fov: 43, near: 0.1, far: 100 }}
-          dpr={[1, 1.7]}
+          camera={{ position: PERSPECTIVE_CAMERA_POSITION, fov: 42, near: 0.1, far: 100 }}
+          dpr={[1, 2]}
           frameloop="demand"
           gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
           shadows
         >
-          <color attach="background" args={["#061019"]} />
-          <fog attach="fog" args={["#061019", 8, 17]} />
-          <ambientLight intensity={0.62} />
-          <hemisphereLight args={["#99e9ff", "#14251f", 1.1]} />
-          <directionalLight position={[4, 7, 3]} intensity={2.2} castShadow />
+          <color attach="background" args={["#050e17"]} />
+          <fog attach="fog" args={["#050e17", 9, 22]} />
+
+          {/* Sunlight & Studio Illumination */}
+          <ambientLight intensity={0.48} />
+          <hemisphereLight args={["#d4efff", "#14221b", 0.95]} />
+          <directionalLight
+            position={[5, 8, 4]}
+            intensity={2.1}
+            castShadow
+            shadow-mapSize={[1024, 1024]}
+            shadow-bias={-0.0001}
+          />
+          {/* Subtle warm rim light for crisp architectural relief */}
+          <directionalLight position={[-4, 3, -3]} intensity={0.55} color="#ffd494" />
+
           <TerrainMesh
             data={terrain}
             grid={depthGrid}
@@ -525,8 +827,9 @@ export default function TerrainViewer({ depthGrid, textureUrl, geospatial, input
             onTextureStateChange={setTextureState}
             textureLoadKey={textureLoadKey}
           />
-          <gridHelper args={[12, 24, "#1c5160", "#102932"]} position={[0, -0.55, 0]} />
-          <CameraControls resetKey={resetKey} preset={cameraPreset} />
+
+          <gridHelper args={[14, 28, "#1a4652", "#0c232a"]} position={[0, -0.62, 0]} />
+          <CameraControls resetKey={resetKey} preset={cameraPreset} autoRotate={autoRotate} />
         </Canvas>
       </div>
 
@@ -553,10 +856,12 @@ export default function TerrainViewer({ depthGrid, textureUrl, geospatial, input
           <button type="button" className="icon-button" onClick={() => setSample(null)} aria-label="Clear selected point">×</button>
         </div>
       ) : (
-        <div className="terrain-hint">Drag to orbit · Scroll to zoom · Click the surface to inspect</div>
+        <div className="terrain-hint">Drag to orbit · Scroll to zoom · Click the 3D surface to inspect elevation</div>
       )}
 
-      <div className="mesh-resolution">Mesh {terrain.columns} × {terrain.rows}</div>
+      <div className="mesh-resolution">
+        Mesh {terrain.columns} × {terrain.rows} · 3D Diorama Block
+      </div>
     </div>
   );
 }
