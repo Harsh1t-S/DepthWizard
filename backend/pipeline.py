@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,8 @@ from .evaluation import (
 )
 from .model import QUALITY_MODES, DepthEstimator, PredictionInfo, get_depth_estimator
 from ml.refine import flatten_surfaces, refine_depth_with_image
+
+from .scene_calibration import calibrate_from_scene_shadows
 from .raster_io import (
     ImageRaster,
     align_elevation_raster,
@@ -137,6 +140,7 @@ def analyze_bytes(
     gcps_filename: str | None = None,
     gcp_sampling: str = "bilinear",
     quality_mode: str = "fast",
+    acquisition_time: str | None = None,
     estimator: DepthEstimator | Any | None = None,
     artifact_root: Path | None = None,
     public_artifact_base_url: str | None = None,
@@ -318,9 +322,96 @@ def analyze_bytes(
             f"down from zero; model depth was sampled with {normalized_sampling} interpolation."
         )
 
+    elif source.crs is not None and source.transform is not None:
+        # No reference DEM and no GCPs, but the image is georeferenced. Solar
+        # geometry plus shadow length yields metric heights from the scene
+        # itself, which is the only route to an absolute DSM without an extra
+        # file. It reports a reason instead of a number whenever it cannot be
+        # trusted, so an unusable fit leaves the output relative.
+        parsed_time: datetime | None = None
+        if acquisition_time:
+            try:
+                parsed_time = datetime.fromisoformat(acquisition_time.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ValueError(
+                    "acquisition_time must be ISO 8601, for example 2021-04-15T15:30:00Z"
+                ) from exc
+            if parsed_time.tzinfo is None:
+                parsed_time = parsed_time.replace(tzinfo=timezone.utc)
+        shadow_fit = calibrate_from_scene_shadows(depth, source, acquisition_time=parsed_time)
+        if shadow_fit.get("usable"):
+            scale = float(shadow_fit["scale"])
+            offset = float(shadow_fit["offset"])
+            calibrated_height = (depth * scale + offset).astype(np.float32)
+            calibrated_valid_mask = np.isfinite(depth)
+            if source.valid_mask is not None:
+                calibrated_valid_mask &= source.valid_mask
+            calibration = {
+                "source": "scene_shadows",
+                "method": shadow_fit["method"],
+                "scale": scale,
+                "shift": offset,
+                "units": shadow_fit["units"],
+                "reference_samples": int(shadow_fit["shadow_samples"]),
+                "solar_elevation_degrees": shadow_fit["solar"]["elevation_degrees"],
+                "solar_azimuth_degrees": shadow_fit["solar"]["azimuth_degrees"],
+                "acquisition_time": shadow_fit.get("acquisition_time"),
+            }
+            mode = "shadow_calibrated_dsm"
+            reference_summary = {
+                "type": "scene_shadows",
+                "source": "scene_shadows",
+                "filename": None,
+                "point_count": int(shadow_fit["shadow_samples"]),
+                "calibration_points": int(shadow_fit["shadow_samples"]),
+                "holdout_points": 0,
+                "coverage": shadow_fit.get("shadow_fraction"),
+                "units": shadow_fit["units"],
+            }
+            notices.append(
+                "Metric heights were derived from shadow length and solar "
+                f"geometry at {shadow_fit['solar']['elevation_degrees']:.1f} degrees "
+                f"elevation, using {shadow_fit['shadow_samples']} shadow runs. No "
+                "external elevation reference was used."
+            )
+            notices.append(str(shadow_fit["note"]))
+        else:
+            notices.append(
+                "Shadow-based metric calibration was not applied: "
+                f"{shadow_fit.get('reason')}"
+            )
+
     if calibration is not None and aligned_ground_truth is not None:
         assert calibrated_height is not None
         assert aligned_ground_truth_mask is not None
+
+        # Shadow calibration yields height above local ground, with no vertical
+        # datum: nothing in a single image fixes where mean sea level is. A
+        # ground-truth DSM is absolute elevation, so comparing the two directly
+        # measures the datum offset and swamps the real error. Removing a single
+        # constant restores a like-for-like comparison of relief; this is one
+        # degree of freedom, not a per-pixel fit, and it is recorded in the
+        # metrics so the number is never mistaken for absolute agreement.
+        if calibration.get("source") == "scene_shadows":
+            comparable = np.isfinite(calibrated_height) & aligned_ground_truth_mask
+            if source.valid_mask is not None:
+                comparable &= source.valid_mask
+            if int(comparable.sum()) >= 64:
+                datum_offset = float(
+                    np.median(aligned_ground_truth[comparable] - calibrated_height[comparable])
+                )
+                calibrated_height = (calibrated_height + datum_offset).astype(np.float32)
+                calibration["vertical_datum_offset"] = round(datum_offset, 3)
+                calibration["datum_note"] = (
+                    "A single constant was added to align height-above-ground with "
+                    "the evaluation DSM's vertical datum. Metrics therefore measure "
+                    "relief agreement, not absolute elevation."
+                )
+                notices.append(
+                    f"A constant vertical offset of {datum_offset:.2f} m aligned the "
+                    "shadow-calibrated surface to the evaluation DSM datum; reported "
+                    "metrics measure relief, not absolute elevation."
+                )
         evaluation = evaluate_calibrated_height(
             calibrated_height,
             aligned_ground_truth,

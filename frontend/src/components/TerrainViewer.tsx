@@ -1,4 +1,4 @@
-import { OrbitControls, PointerLockControls } from "@react-three/drei";
+import { OrbitControls, PointerLockControls, Sky } from "@react-three/drei";
 import { Canvas, type ThreeEvent, useFrame, useThree } from "@react-three/fiber";
 import {
   ArrowDown,
@@ -219,11 +219,26 @@ function terrainColor(normalized: number): THREE.Color {
   return lower.color.clone().lerp(upper.color, amount);
 }
 
+/**
+ * Shade near-vertical faces as facades.
+ *
+ * A heightfield has no building sides, so the roof texture is stretched down
+ * every wall. Left alone that is the single most obvious tell at ground level.
+ * Darkening steep faces toward a concrete tone makes them read as walls
+ * instead of smeared roof pixels.
+ */
+function facadeShade(verticality: number): THREE.Color {
+  const wall = new THREE.Color("#8d9199");
+  const amount = Math.min(1, Math.max(0, (verticality - 0.35) / 0.45));
+  return new THREE.Color(1, 1, 1).lerp(wall, amount * 0.85);
+}
+
 function createTerrainGeometry(
   grid: DepthGrid,
   smoothing: SmoothingLevel,
   detrend: boolean,
   withSkirt: boolean,
+  colorMode: "texture" | "height",
 ): TerrainData {
   const dimensions = getGridDimensions(grid);
   const columns = Math.min(MAX_MESH_DIMENSION, dimensions.width);
@@ -295,7 +310,22 @@ function createTerrainGeometry(
         ? Math.max(0, Math.min(1, samples[index]))
         : Math.max(0, Math.min(1, (samples[index] - minimum) / range));
       normalizedHeights[index] = normalized;
-      const color = terrainColor(normalized);
+
+      // Central-difference slope in scene units; the sample grid is uniform so
+      // the horizontal step is constant.
+      const left = samples[row * columns + Math.max(0, column - 1)];
+      const right = samples[row * columns + Math.min(columns - 1, column + 1)];
+      const up = samples[Math.max(0, row - 1) * columns + column];
+      const down = samples[Math.min(rows - 1, row + 1) * columns + column];
+      const stepX = width / Math.max(1, columns - 1);
+      const stepZ = depth / Math.max(1, rows - 1);
+      const scale = alreadyNormalized ? 1 : 1 / range;
+      const slopeX = ((right - left) * scale * HEIGHT_SCALE) / (2 * stepX);
+      const slopeZ = ((down - up) * scale * HEIGHT_SCALE) / (2 * stepZ);
+      const verticality = Math.min(1, Math.hypot(slopeX, slopeZ));
+
+      const color =
+        colorMode === "texture" ? facadeShade(verticality) : terrainColor(normalized);
 
       positions[index * 3] = (u - 0.5) * width;
       positions[index * 3 + 1] = (normalized - 0.5) * HEIGHT_SCALE;
@@ -744,15 +774,17 @@ function TerrainMesh({
       castShadow
     >
       {/*
-        `map` and `vertexColors` both change the compiled shader's defines. The
-        texture arrives asynchronously, so without remounting the material the
-        program built for vertex colours is kept and the satellite imagery never
-        appears. Keying on the mode forces a fresh material and shader compile.
+        `map` changes the compiled shader's defines and the texture arrives
+        asynchronously, so the material is remounted when it lands; otherwise
+        the program built without a map is kept and the imagery never appears.
+
+        Vertex colours stay on in both modes. With a map they multiply it,
+        which is what applies the facade tint to near-vertical faces.
       */}
       <meshStandardMaterial
         key={hasTexture ? "textured" : "vertex-colored"}
         map={hasTexture ? texture : null}
-        vertexColors={!hasTexture}
+        vertexColors
         wireframe={wireframe}
         roughness={0.82}
         metalness={0.06}
@@ -787,8 +819,8 @@ export default function TerrainViewer({
   const [textureLoadKey, setTextureLoadKey] = useState(0);
 
   const terrain = useMemo(
-    () => createTerrainGeometry(depthGrid, smoothing, detrend, withSkirt),
-    [depthGrid, smoothing, detrend, withSkirt],
+    () => createTerrainGeometry(depthGrid, smoothing, detrend, withSkirt, materialMode),
+    [depthGrid, smoothing, detrend, withSkirt, materialMode],
   );
 
   useEffect(() => () => terrain.geometry.dispose(), [terrain]);
@@ -992,27 +1024,44 @@ export default function TerrainViewer({
 
       <div className="terrain-canvas" role="img" aria-label="Interactive photorealistic predicted terrain reconstruction">
         <Canvas
-          camera={{ position: PERSPECTIVE_CAMERA_POSITION, fov: 42, near: 0.01, far: 100 }}
+          camera={{ position: PERSPECTIVE_CAMERA_POSITION, fov: 42, near: 0.01, far: 400 }}
           dpr={[1, 2]}
-          frameloop={navMode === "walk" || autoRotate ? "always" : "demand"}
+          frameloop={navMode === "walk" ? "always" : "demand"}
           gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
+          onCreated={({ gl }) => {
+            // Filmic response and a slight lift stop the render reading as flat
+            // and plastic; this is the largest single realism gain available
+            // without an image-based lighting probe.
+            gl.toneMapping = THREE.ACESFilmicToneMapping;
+            gl.toneMappingExposure = 1.05;
+          }}
           shadows
         >
-          <color attach="background" args={["#050e17"]} />
-          <fog attach="fog" args={["#050e17", 9, 22]} />
+          {/*
+            A procedural atmospheric sky rather than drei's Environment presets:
+            those fetch an HDR from a CDN, which would break the offline
+            standalone build. At ground level this is also what stops the
+            horizon being an empty void.
+          */}
+          <Sky sunPosition={[6, 4.2, 3]} turbidity={5} rayleigh={1.4} mieCoefficient={0.006} />
+          <fog attach="fog" args={["#9fb6c8", 24, 90]} />
 
-          {/* Sunlight & Studio Illumination */}
-          <ambientLight intensity={0.48} />
-          <hemisphereLight args={["#d4efff", "#14221b", 0.95]} />
+          <ambientLight intensity={0.34} />
+          <hemisphereLight args={["#cfe6ff", "#2b3a33", 0.72]} />
           <directionalLight
-            position={[5, 8, 4]}
-            intensity={2.1}
+            position={[6, 4.2, 3]}
+            intensity={2.35}
             castShadow
-            shadow-mapSize={[1024, 1024]}
-            shadow-bias={-0.0001}
+            shadow-mapSize={[2048, 2048]}
+            shadow-normalBias={0.02}
+            shadow-camera-left={-4.5}
+            shadow-camera-right={4.5}
+            shadow-camera-top={4.5}
+            shadow-camera-bottom={-4.5}
+            shadow-camera-near={0.1}
+            shadow-camera-far={30}
           />
-          {/* Subtle warm rim light for crisp architectural relief */}
-          <directionalLight position={[-4, 3, -3]} intensity={0.55} color="#ffd494" />
+          <directionalLight position={[-4, 3, -3]} intensity={0.4} color="#ffd9a8" />
 
           <TerrainMesh
             data={terrain}
