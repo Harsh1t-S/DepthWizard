@@ -27,6 +27,7 @@ from .evaluation import (
     evaluate_relative_depth,
 )
 from .model import QUALITY_MODES, DepthEstimator, PredictionInfo, get_depth_estimator
+from ml.refine import refine_depth_with_image
 from .raster_io import (
     ImageRaster,
     align_elevation_raster,
@@ -34,6 +35,21 @@ from .raster_io import (
     read_ground_truth_bytes,
     read_image_bytes,
 )
+
+
+def _refinement_settings() -> tuple[bool, int, float]:
+    """Read guided-refinement configuration from the environment."""
+
+    enabled = os.getenv("DEPTHWIZARD_REFINE", "1").strip().lower() not in {"0", "false", "off"}
+    try:
+        radius = int(os.getenv("DEPTHWIZARD_REFINE_RADIUS", "32"))
+    except ValueError as exc:
+        raise ValueError("DEPTHWIZARD_REFINE_RADIUS must be an integer") from exc
+    try:
+        epsilon = float(os.getenv("DEPTHWIZARD_REFINE_EPSILON", "0.001"))
+    except ValueError as exc:
+        raise ValueError("DEPTHWIZARD_REFINE_EPSILON must be a number") from exc
+    return enabled, max(1, radius), max(1e-8, epsilon)
 
 
 def _max_decoded_pixels() -> int:
@@ -195,6 +211,7 @@ def analyze_bytes(
         f"Live output from {prediction_info.get('model_id', 'the configured model')} "
         "is relative monocular depth, not metric elevation."
     ]
+
     notices.extend(preprocessing_notices)
     inference_passes = int(prediction_info.get("inference_passes", 1))
     tiled = bool(prediction_info.get("tiled", False))
@@ -417,6 +434,30 @@ def analyze_bytes(
         mesh_heights = normalize_for_preview(depth, source.valid_mask)
         mesh_mask = source.valid_mask
         mode = "relative_depth"
+
+    # Guided refinement is applied to the render surface only, never to the
+    # exported depth, the calibrated DSM, or the metrics.
+    #
+    # It pulls depth edges onto the image edges, which sharpens building
+    # outlines considerably. It also transfers some image albedo into the
+    # height field, and measured against the DC LiDAR DSM that costs 2% RMSE at
+    # radius 8 and 15% at radius 32. Accuracy is scored on the exported
+    # products, so the raw prediction must stay untouched.
+    refine_enabled, refine_radius, refine_epsilon = _refinement_settings()
+    if refine_enabled and mesh_heights is not None:
+        mesh_heights = refine_depth_with_image(
+            mesh_heights,
+            source.rgb,
+            radius=refine_radius,
+            epsilon=refine_epsilon,
+            valid_mask=mesh_mask,
+        )
+        notices.append(
+            "The 3-D surface was edge-aligned to the source image with a guided "
+            f"filter (radius {refine_radius}). This is a display-only refinement; "
+            "exported depth, the calibrated DSM, and all metrics use the "
+            "unrefined prediction."
+        )
 
     inference_summary = {
         "quality_mode": normalized_quality,
