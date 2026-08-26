@@ -105,6 +105,10 @@ export interface ResultUrls {
   reference_dem?: string | null;
   ground_truth?: string | null;
   error?: string | null;
+  /** Full-resolution height field for the mesh, as a 16-bit PNG. */
+  height16?: string | null;
+  /** Tangent-space normals derived from the prediction, for lighting detail. */
+  normal?: string | null;
 }
 
 export interface AnalysisResponse {

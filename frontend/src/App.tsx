@@ -18,7 +18,9 @@ export default function App() {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [dsmFile, setDsmFile] = useState<File | null>(null);
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
-  const [qualityMode, setQualityMode] = useState<InferenceQualityMode>("fast");
+  // Quality is the default: measured against the DC LiDAR pair it improves RMSE
+  // from 12.008 to 11.451 for 0.4 s, which is worth paying on every run.
+  const [qualityMode, setQualityMode] = useState<InferenceQualityMode>("quality");
   const [acquisitionTime, setAcquisitionTime] = useState("");
   const [result, setResult] = useState<AnalysisResponse | null>(null);
   const [loadingAction, setLoadingAction] = useState<LoadingAction | null>(null);

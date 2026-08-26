@@ -460,11 +460,12 @@ export function ResultsWorkspace({ result }: ResultsWorkspaceProps) {
     () => ({
       original: resolveApiUrl(result.urls.original),
       depth: resolveApiUrl(result.urls.depth),
+      normal: resolveApiUrl(result.urls.normal),
       referenceDem: resolveApiUrl(result.urls.reference_dem),
       groundTruth: resolveApiUrl(result.urls.ground_truth),
       error: resolveApiUrl(result.urls.error),
     }),
-    [result.urls.depth, result.urls.error, result.urls.ground_truth, result.urls.original, result.urls.reference_dem],
+    [result.urls.depth, result.urls.error, result.urls.ground_truth, result.urls.normal, result.urls.original, result.urls.reference_dem],
   );
   const tabs = useMemo<ViewTab[]>(() => {
     const nextTabs: ViewTab[] = [];
@@ -557,6 +558,7 @@ export function ResultsWorkspace({ result }: ResultsWorkspaceProps) {
               <TerrainViewer
                 depthGrid={result.depth_grid}
                 textureUrl={resolvedUrls.original}
+                normalUrl={resolvedUrls.normal}
                 geospatial={result.geospatial}
                 inputWidth={result.input.width}
                 inputHeight={result.input.height}

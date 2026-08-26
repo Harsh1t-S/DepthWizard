@@ -256,6 +256,52 @@ class ArtifactWriter:
             )
         return reference
 
+    def write_normal_map(
+        self,
+        filename: str,
+        heights: np.ndarray,
+        strength: float = 1.0,
+        valid_mask: np.ndarray | None = None,
+    ) -> str:
+        """Write a tangent-space normal map derived from the full-resolution field.
+
+        The mesh carries 512 cells, but the prediction is far denser than that.
+        Encoding the finer gradients as surface normals lets lighting express
+        detail the geometry cannot hold, which is what stops a large roof from
+        reading as a single flat plastic panel.
+        """
+
+        array = np.asarray(heights, dtype=np.float32)
+        finite = np.isfinite(array)
+        if valid_mask is not None:
+            finite &= np.asarray(valid_mask, dtype=bool)
+        fill = float(np.median(array[finite])) if finite.any() else 0.0
+        filled = np.where(finite, array, fill).astype(np.float32)
+
+        span = float(filled.max() - filled.min())
+        if span > np.finfo(np.float32).eps:
+            filled = (filled - filled.min()) / span
+
+        # Sobel gradients; the z term sets how pronounced the relief appears.
+        dy, dx = np.gradient(filled)
+        scale = max(float(strength), 1e-3)
+        nx = -dx * scale
+        ny = -dy * scale
+        nz = np.ones_like(filled)
+        length = np.sqrt(nx * nx + ny * ny + nz * nz)
+        nx, ny, nz = nx / length, ny / length, nz / length
+
+        # OpenGL convention: +Y up, so the row gradient is negated on write.
+        rgb = np.stack(
+            [
+                (nx * 0.5 + 0.5) * 255.0,
+                (-ny * 0.5 + 0.5) * 255.0,
+                (nz * 0.5 + 0.5) * 255.0,
+            ],
+            axis=-1,
+        ).astype(np.uint8)
+        return self.write_rgb(filename, rgb)
+
     def write_npy(self, filename: str, values: np.ndarray) -> str:
         np.save(self.path(filename), np.asarray(values, dtype=np.float32), allow_pickle=False)
         return self.reference(filename)

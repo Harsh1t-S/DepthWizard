@@ -41,6 +41,7 @@ type SmoothingLevel = "none" | "subtle" | "balanced" | "smooth";
 interface TerrainViewerProps {
   depthGrid: DepthGrid;
   textureUrl: string | null;
+  normalUrl?: string | null;
   geospatial: GeospatialMetadata | null;
   inputWidth: number;
   inputHeight: number;
@@ -748,6 +749,7 @@ function TerrainMesh({
   inputHeight,
   geospatial,
   textureUrl,
+  normalUrl,
   showTexture,
   wireframe,
   exaggeration,
@@ -761,6 +763,7 @@ function TerrainMesh({
   inputHeight: number;
   geospatial: GeospatialMetadata | null;
   textureUrl: string | null;
+  normalUrl?: string | null;
   showTexture: boolean;
   wireframe: boolean;
   exaggeration: number;
@@ -769,6 +772,39 @@ function TerrainMesh({
   textureLoadKey: number;
 }) {
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
+  // Derived from the full-resolution prediction, so it expresses relief finer
+  // than the 512-cell mesh can carry.
+  const [normalMap, setNormalMap] = useState<THREE.Texture | null>(null);
+
+  useEffect(() => {
+    if (!normalUrl) {
+      setNormalMap(null);
+      return;
+    }
+    let active = true;
+    let loaded: THREE.Texture | null = null;
+    const loader = new THREE.TextureLoader();
+    loader.setCrossOrigin("anonymous");
+    loader.load(
+      normalUrl,
+      (next) => {
+        loaded = next;
+        next.colorSpace = THREE.NoColorSpace;
+        next.anisotropy = 8;
+        if (active) setNormalMap(next);
+        else next.dispose();
+      },
+      undefined,
+      () => {
+        // Lighting simply loses the fine relief; not worth surfacing.
+        if (active) setNormalMap(null);
+      },
+    );
+    return () => {
+      active = false;
+      loaded?.dispose();
+    };
+  }, [normalUrl]);
 
   useEffect(() => {
     setTexture(null);
@@ -853,8 +889,10 @@ function TerrainMesh({
         which is what applies the facade tint to near-vertical faces.
       */}
       <meshStandardMaterial
-        key={hasTexture ? "textured" : "vertex-colored"}
+        key={`${hasTexture ? "textured" : "vertex-colored"}-${normalMap ? "n" : "flat"}`}
         map={hasTexture ? texture : null}
+        normalMap={normalMap}
+        normalScale={normalMap ? new THREE.Vector2(0.6, 0.6) : undefined}
         vertexColors
         wireframe={wireframe}
         roughness={0.82}
@@ -868,6 +906,7 @@ function TerrainMesh({
 export default function TerrainViewer({
   depthGrid,
   textureUrl,
+  normalUrl,
   geospatial,
   inputWidth,
   inputHeight,
@@ -1176,6 +1215,7 @@ export default function TerrainViewer({
             inputHeight={inputHeight}
             geospatial={geospatial}
             textureUrl={textureUrl}
+            normalUrl={normalUrl}
             showTexture={showTexture}
             wireframe={wireframe}
             exaggeration={exaggeration}

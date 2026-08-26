@@ -482,6 +482,7 @@ def analyze_bytes(
         "calibrated_dsm": None,
         "calibrated_dsm_npy": None,
         "height16": None,
+        "normal": None,
     }
 
     if aligned_reference_dem is not None and aligned_reference_dem_mask is not None:
@@ -629,6 +630,13 @@ def analyze_bytes(
         ),
     }
     urls["height16"] = artifacts["height_png16"]
+
+    # Derived from the full-resolution prediction rather than the 512-cell mesh,
+    # so it carries relief the geometry cannot represent.
+    artifacts["normal_png"] = writer.write_normal_map(
+        "normal.png", mesh_heights, strength=24.0, valid_mask=mesh_mask
+    )
+    urls["normal"] = artifacts["normal_png"]
 
     inference_summary = {
         "quality_mode": normalized_quality,
