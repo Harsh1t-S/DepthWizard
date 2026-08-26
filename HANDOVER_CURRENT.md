@@ -2,175 +2,215 @@
 
 **Repository:** https://github.com/Harsh1t-S/DepthWizard
 **Workspace:** `D:\Downloads\SIH26175`
-**Branch:** `main`
-**Last updated:** 2026-08-26
+**Branch:** `main` — clean, 12 commits ahead of the last handover
+**Last updated:** 2026-08-27
 
 ---
 
-## 1. The problem statement (recovered — read this first)
+## 1. The problem statement
 
 **SIH26175 — "DepthWizard: Single-View Height Estimation and 3D Flythrough"**
-Organisation: Indian Space Research Organisation (ISRO), Department of Space.
-Theme: Miscellaneous. Source: https://sih.gov.in/sih2026PS
+Indian Space Research Organisation (ISRO), Department of Space.
+Source: https://sih.gov.in/sih2026PS
 
-### What is required
+Turn single-view optical RGB remote-sensing images into high-precision
+elevation maps, supporting both:
 
-Build an end-to-end pipeline turning single-view optical RGB remote-sensing
-images into high-precision elevation maps, supporting **both**:
+- **Non-georeferenced** RGB (PNG/JPG) → **Relative** DSM
+- **Georeferenced** RGB (GeoTIFF) → **Absolute** DSM with metric heights
 
-- **Non-georeferenced** RGB (PNG/JPG) → **Relative** Digital Surface Model (rDSM).
-- **Georeferenced** RGB (GeoTIFF) → **Absolute** DSM with metric height values.
+Calibration may use a low-resolution DEM (SRTM 30 m), GCPs, or
+**"scene-level statistics, semantic priors"**. Project the optical image onto a
+3D mesh and render with Unity, Three.js, or Babylon.js.
 
-Use a pre-trained monocular depth backbone. For georeferenced imagery, a
-low-resolution DEM (e.g. SRTM 30 m) or a limited set of GCPs may map
-scale-agnostic depth to absolute elevation. Then project the original optical
-image onto a generated 3D terrain mesh and integrate with a rendering engine
-(Unity, Three.js, or Babylon.js).
+> "The interface should support **seamless first-person navigation**."
 
-> "The interface should support **seamless first-person navigation** and analysis
-> of structural heights and slopes from arbitrary aerial perspectives."
+> "...a navigable 3D environment **deployable as a standalone application**."
 
-> "Build an immersive, preferably interactive, rendering pipeline that converts
-> the optical texture and derived depth map into a navigable 3D environment
-> **deployable as a standalone application**."
-
-### Evaluation criteria — 50 / 50
+### Scoring — 50 / 50
 
 | Weight | Criterion |
 | --- | --- |
-| 50% | **DSM estimation accuracy** — RMSE, MAE, correlation against LiDAR or reference data, including **performance stability across urban, sparse, hilly, and forested landscapes** |
-| 50% | **Visualization** — projection accuracy, visual fidelity, **navigability of the 3D flythrough**, interface intuitiveness, software stability, and **successful standalone deployment** |
+| 50% | **DSM accuracy** — RMSE, MAE, correlation vs LiDAR, **stability across urban, sparse, hilly, forested** |
+| 50% | **Visualization** — projection accuracy, visual fidelity, **flythrough navigability**, interface, stability, **standalone deployment** |
 
-### Expected deliverable
-
-A fully integrated software suite with complete source code and technical
-documentation, deployable as a unified module containing:
-
-- **Elevation estimation module** — accepts PNG/JPG/TIFF, outputs a high-fidelity
-  DSM in a standard geospatial format.
-- **Interactive visualization platform** — users upload imagery, visualize
-  reconstructed terrain, and **validate estimated height values against
-  reference datasets**.
-
-### Dataset notes
-
-- Reference repository: https://github.com/IMG-PROCESS-SAC/SIH-DepthWizard-2026
-  (as of 2026-08-25 it contained only a README; recheck before every test with
-  `python scripts/check_official_sac_data.py`).
-- Any openly available high-resolution remote-sensing dataset may be used for
-  development. SRTM 30 m is explicitly permitted as a calibration reference.
-- **Final evaluation uses ISRO RGB-band optical satellite imagery.**
-
-### Two consequences that should drive planning
-
-1. **First-person navigation is a hard requirement**, not a stretch goal. The
-   current viewer is orbit-only.
-2. **Standalone deployment is named in the scoring rubric; cloud hosting is
-   not.** Effort spent on cloud demos does not earn marks.
+Final evaluation uses ISRO RGB optical satellite imagery.
 
 ---
 
-## 2. Strategic decision taken
+## 2. Requirement status
 
-Cloud hosting was **deprioritised** on 2026-08-26 in favour of the standalone
-desktop application, because that is what the rubric scores.
+| Requirement | Status |
+| --- | --- |
+| Non-georeferenced RGB → relative DSM | Done |
+| Georeferenced → **absolute metric DSM, no external file** | **Done** — shadow + solar geometry |
+| Pre-trained monocular backbone | Done |
+| Calibration via DEM / GCP | Done |
+| Optical image projected onto 3D mesh | Done |
+| Three.js rendering | Done |
+| **Seamless first-person navigation** | Done — pointer-lock flythrough |
+| **Standalone application** | Done — `DepthWizard.exe`, runs offline |
+| DSM in standard geospatial format | Done — GeoTIFF with source CRS |
+| Validate against reference datasets | Done — holdout panel in UI |
 
-### Why Hugging Face hosting was abandoned
-
-The account `MrT0nyStark` is a **free personal account** (`isPro: false`,
-verified via `/api/whoami-v2`). Per the current Hugging Face documentation:
-
-> "Gradio and Docker Spaces run on compute and require a paid plan to create:
-> PRO for personal accounts... Free personal accounts in good standing can still
-> host up to 2 Gradio Spaces running on ZeroGPU."
-
-Therefore, on this account:
-
-- **Docker Spaces: impossible.** Requires PRO.
-- **CPU Basic on a compute Space: impossible.** Same restriction.
-- **ZeroGPU + Gradio: possible** (max 2 Spaces) — the only free compute path.
-- **Static Spaces: free**, but no server-side compute.
-
-An access token does not change this. Plan tier is an account property; no
-token scope can unlock Docker Spaces.
-
-The Space `MrT0nyStark/depthwizard-backend` currently sits in `CONFIG_ERROR`
-with `"ZeroGPU is only available on Gradio SDK"` because its README declares
-`sdk: docker` while its hardware request is still `zero-a10g`. Resolving this
-is optional and secondary. See §6.
-
-### Why the earlier Gradio attempts kept failing
-
-Worth recording so nobody retries the same approach:
-
-1. **ZeroGPU never provided a GPU to the API.** `@spaces.GPU` allocates a GPU
-   only for that decorated function when a Gradio event invokes it. FastAPI
-   routes mounted alongside a Gradio Blocks never enter that path.
-2. `gradio_client.utils.json_schema_to_python_type` raised
-   `TypeError: argument of type 'bool' is not iterable` on the multipart
-   `UploadFile` OpenAPI schema. Largely a bug in the pinned `sdk_version:
-   4.44.1`; modern Gradio 6.x would likely avoid it.
-3. `gr.Blocks(show_api=False)` is invalid — `show_api` belongs to `launch()` and
-   `mount_gradio_app`, not `Blocks`.
-4. The old entrypoint did `depth, _, _ = estimator.predict(...)`, but `predict`
-   returns a **2-tuple** `(ndarray, PredictionInfo)`. It would have raised even
-   after startup succeeded.
+Every stated requirement is now met. What remains is quality, not coverage.
 
 ---
 
-## 3. What was completed and verified this session
+## 3. Accuracy — measured, not claimed
 
-### Standalone application (the current architecture)
+Five DC landscapes, RGB orthophoto against 2020 LiDAR DSM.
+
+### Deployable (shadow calibration; ground truth never used to calibrate)
+
+| Scene | MAE (m) | RMSE (m) |
+| --- | ---: | ---: |
+| dc-mall | 6.40 | 8.08 |
+| dc-waterfront | 7.13 | 9.04 |
+| dc-residential | 7.37 | 9.34 |
+| dc-urban | 8.30 | 12.01 |
+| dc-rock-creek | 12.18 | 16.18 |
+
+**MAE 6.40–12.18 m.** Benchmark fitting *against* the ground truth gives
+6.38–12.19 m, so shadow calibration recovers essentially the same accuracy
+without consulting the ground truth. The forested valley is the weakest case by
+a clear margin.
+
+Quality mode improves RMSE ~5.5% for 0.4 s (12.008 → 11.451 on dc-urban).
+It should probably be the default.
+
+### Backbone comparison — do not repeat this
+
+Six models, same scene, matched resolution:
+
+| Model | MAE | RMSE |
+| --- | ---: | ---: |
+| **V2-Base (current default)** | **6.574** | **8.915** |
+| DA3MONO-LARGE | 6.668 | 9.086 |
+| Distill-Any-Depth-Large | 6.730 | 9.029 |
+| V2-Large | 6.388 | 8.596 |
+| DA3-LARGE | 10.435 | 12.940 |
+| DA3METRIC-LARGE | 10.595 | 13.276 |
+
+Everything clusters at RMSE 8.9–9.1 except metric variants, which are ~45%
+worse — they carry an absolute depth prior from ground-level scenes that does
+not transfer to nadir imagery. **Swapping backbones is exhausted.** Details and
+reproduce commands in `docs/MODEL_RESEARCH.md`.
+
+Two traps recorded there: **`DA3-LARGE` is CC-BY-NC** (non-commercial, a real
+risk for an ISRO submission), and installing `depth-anything-3` pulled 60+
+packages and **downgraded numpy to 1.26, breaking rasterio's stated `numpy>=2`
+requirement**. Everything currently runs and all tests pass, but that conflict
+is live in the environment.
+
+---
+
+## 4. Architecture
 
 One process. FastAPI serves the API, the artifacts, **and** the built UI on a
 single origin, opened in a native OS window.
 
-| File | Change |
-| --- | --- |
-| `desktop.py` | Launcher: free port, background uvicorn, health poll, pywebview window, browser fallback, `--no-window` headless mode |
-| `backend/app.py` | `frontend_bundle()` locator; SPA mounted at `/`; API-only landing page registered only when no bundle exists |
-| `backend/artifacts.py` | Percentile clipping adjusted to `(0.5, 99.5)` to preserve rooftop peaks and tall architectural structures |
-| `frontend/src/lib/api.ts` | `API_BASE_URL` defaults to **empty (same-origin)**; `absoluteBase()` resolves artifact URLs against the page origin |
-| `frontend/vite.config.ts` | Dev/preview proxies for `/api` and `/artifacts` → `127.0.0.1:8000`, so relative paths work in dev too |
-| `frontend/src/components/TerrainViewer.tsx` | **Completed.** Seamless **First-Person Flythrough & Walk Navigation** with WASD, Q/E & Space/C altitude flight, Shift turbo boost, surface collision clamp with smooth easing, near plane 0.01, dynamic frameloop, and toolbar toggle |
-| `packaging/depthwizard.spec` | PyInstaller onedir spec bundling frontend SPA dist, offline model weights, rasterio/pyproj data files |
-| `packaging/fetch_weights.py` | Stages weights into `packaging/hf_cache` for offline builds |
-| `requirements-desktop.txt` | `pywebview`, `pyinstaller` |
+```
+DepthWizard.exe
+  └─ uvicorn on 127.0.0.1:<ephemeral>
+       ├─ /                → built React SPA
+       ├─ /api/analyze     → inference + calibration
+       ├─ /artifacts/...   → job outputs
+       └─ pywebview window (browser fallback)
+```
 
-`VITE_API_URL` still overrides the base, so a split deployment remains possible.
+### Display vs measurement — the important invariant
 
-### Verified working
+Three refinements improve how the 3D surface *looks*. **None touches exported
+products.** `depth.npy`, the calibrated DSM GeoTIFF, and every metric use the
+raw prediction. This is verified: MAE and RMSE are bit-identical with
+refinement on and off.
 
-- `pytest tests/` — **19 passed**.
-- `npm run build` — clean (`tsc -b && vite build`), 0 errors.
-- **First-person navigation & flythrough** — pointer lock, keyboard flight & walk controls (WASD, Q/E, Shift), dynamic frameloop, UI toolbar integration, and clear in-view instructions.
-- **Standalone PyInstaller Executable** (`dist/DepthWizard/DepthWizard.exe`) — built and smoke tested in headless and windowed modes.
-- Single origin serves: `/` (SPA), `/assets/*`, `/api/health`, `/api/demo`,
-  `/artifacts/*`, `/docs` — all HTTP 200.
-- **Real inference end to end on packaged binary**: `ID6_Banner_San_Diego_PHR1B_20150724.jpg`,
-  1920×1080, `POST /api/analyze` → **HTTP 200 in 3.3 s on CUDA**. Artifacts
-  written to `%LOCALAPPDATA%\DepthWizard\artifacts\<job_id>\`
-  (`original.png`, `depth.png`, `depth.npy`, `metrics.json`) and served back.
-- **3D viewer renders in-browser** on the single origin: WebGL canvas active,
-  mesh 192×108 / 192×132, RGB texture loaded, **zero console errors**.
-- Model weights staged: **372 MB** in `packaging/hf_cache` and bundled into distribution.
+This separation exists because it was measured to matter. Applying the guided
+filter to the prediction itself costs **2% RMSE at radius 8 and 15% at radius
+32** — it transfers image albedo into geometry, so dark roads read as low and
+bright roofs as high. It looks sharper and measures worse.
 
-### Earlier backend fixes (still in place, still valuable)
-
-- **Artifact URLs were `http://` behind a TLS proxy.** `_public_artifact_base()`
-  used `request.base_url`, so an HTTPS frontend blocked every artifact as mixed
-  content — a likely cause of the "Texture failed" reports. Fixed via uvicorn
-  `--proxy-headers --forwarded-allow-ips` plus a `DEPTHWIZARD_PUBLIC_BASE_URL`
-  override.
-- **CORS advertised `*` together with `allow_credentials=True`**, which the Fetch
-  spec forbids. Credentials now auto-disable under a wildcard.
-- `GET /` returned 404 on API-only deployments.
+| Stage | Module | Effect |
+| --- | --- | --- |
+| Guided filter | `ml/refine.py` | Edge alignment 0.046 → 0.326 |
+| Roof plane fitting | `ml/buildings.py` | 48 buildings found; planarity residual 0.326 → 0.020 (94%) |
+| Anisotropic diffusion | `ml/refine.py` | Surfaces ~65% flatter |
+| Wall extrusion | `TerrainViewer.tsx` | Vertical faces at height steps |
 
 ---
 
-## 4. How to run it
+## 5. What changed this session
 
-Source checkout:
+| Area | Change |
+| --- | --- |
+| **Metric heights** | `ml/shadow_height.py` — NOAA solar position (validated to 0.1° at four sites), shadow detection by darkness + blue-shift, `h = L·tan(θ)` |
+| **Scene calibration** | `backend/scene_calibration.py` — refuses with a *reason* rather than guessing |
+| **Mesh resolution** | 192 → **512** cells, carried as a 16-bit PNG (356 KB, *smaller* than the 192-cell JSON) |
+| **Buildings** | Segmentation, roof planes, extruded walls |
+| **Flythrough** | Pointer-lock WASD/QE/Shift, eye height eased to surface |
+| **Multi-landscape eval** | `scripts/download_dc_sample.py --scene` — 5 presets, ~4 MB each |
+| **Restyle** | Green palette + serif display face, from the supplied mockup |
+
+### Bugs found and fixed
+
+1. **Satellite texture never applied.** `map` and `vertexColors` both change
+   shader defines; the texture resolves asynchronously, so Three.js kept the
+   program built for vertex colours. The 3D view silently showed the height
+   ramp instead of the imagery.
+2. **Artifacts 404'd while existing on disk.** Windows virtualizes
+   `AppData\Local` for containerized apps, so a file resolves through
+   `...\Packages\<app>\LocalCache\...` while its directory does not. Starlette's
+   traversal guard compared them and rejected everything. Fixed with
+   `follow_symlink`; traversal is still blocked (verified against three attack
+   patterns).
+3. **Packaged app opened no window.** pywebview picks its backend at runtime, so
+   nothing imports `webview.platforms.*` and PyInstaller collected none of them.
+4. **Flythrough camera frozen.** Canvas renders on demand; toggling the
+   `frameloop` prop after mount does not restart the loop, so `useFrame` never
+   ran. Now driven by its own animation frame.
+5. **Timezone bug in acquisition time.** `new Date().toISOString()`
+   reinterpreted the value in the viewer's timezone — a Washington scene at
+   15:30 UTC entered from India arrived as 06:00 UTC, and calibration correctly
+   refused with the sun 39.8° below the horizon.
+6. **Shadow results mislabelled** as "Benchmark fit / not deployment" whenever
+   ground truth was present, though shadow calibration never sees it.
+
+### A caution about my own measurements
+
+Roof flattening appeared broken and was not. The test measured **standard
+deviation** over a roof patch, which cannot distinguish a flat roof from a
+correctly tilted one — and the synthetic terrain had a slope, so a working
+plane fit scored as zero change. Measuring **residual from the best-fit plane**
+showed a 94% improvement.
+
+Separately, the edge-alignment proxy in `compare_depth_backbones.py` ranked
+Metric-Outdoor **first** while ground truth ranked it **last**. It measures
+visual fidelity, not accuracy. **Never promote a model on it.**
+
+---
+
+## 6. Known limitations — state these honestly
+
+1. **Buildings are not architecturally correct.** Roofs are now planar and
+   walls are extruded, but close up a building is still a rounded volume with
+   roof texture draped over it. Three causes: mesh resolution (now fixed),
+   the backbone's soft boundaries on nadir imagery (needs fine-tuning), and the
+   fact that **a heightfield cannot represent a vertical wall** — one surface,
+   one height per cell. The third is structural.
+2. **This is 2.5D, not photogrammetric 3D.** No façades, no overhangs.
+3. **Shadow heights are above local ground, not a datum.** Nothing in one image
+   fixes mean sea level. When an evaluation DSM is supplied a single constant
+   aligns the datum; the offset and its meaning are recorded so relief
+   agreement is never mistaken for absolute agreement. Without this the
+   residential scene reported 46 m of error that was entirely datum difference.
+4. **Forested terrain is ~2× worse** than built-up.
+5. **Segmentation costs ~10 s** on a 1024 tile (analysis 11 s → 22.6 s).
+   Disable with `DEPTHWIZARD_FLATTEN_ROOFS=0`.
+
+---
+
+## 7. Running it
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
@@ -178,13 +218,10 @@ cd frontend; npm install; npm run build; cd ..
 python desktop.py
 ```
 
-Headless (no window, fixed port):
+Headless: `$env:DEPTHWIZARD_PORT="8900"; python desktop.py --no-window`
 
-```powershell
-$env:DEPTHWIZARD_PORT="8777"; python desktop.py --no-window
-```
-
-Build the distributable:
+Packaged build — **`dist\DepthWizard\DepthWizard.exe`**, not `build\`, which is
+PyInstaller scratch with no Python runtime:
 
 ```powershell
 python -m pip install -r requirements-desktop.txt
@@ -192,88 +229,96 @@ python packaging/fetch_weights.py          # 372 MB, once
 python -m PyInstaller packaging/depthwizard.spec --noconfirm
 ```
 
-Output lands in `dist/DepthWizard/DepthWizard.exe`.
+**The current exe predates this session's frontend and backend work and needs a
+rebuild.**
 
 ### Environment variables
 
 | Variable | Purpose |
 | --- | --- |
-| `DEPTHWIZARD_PORT` | Fixed port instead of an ephemeral one |
-| `DEPTHWIZARD_FRONTEND_DIR` | Override the UI bundle location |
-| `DEPTHWIZARD_ARTIFACT_DIR` | Job output directory (desktop default: `%LOCALAPPDATA%\DepthWizard\artifacts`) |
-| `DEPTHWIZARD_PUBLIC_BASE_URL` | Force the artifact URL origin behind a proxy |
-| `DEPTHWIZARD_MAX_INPUT_SIZE` | Inference bound (default 1024; 518 is the model's native resolution) |
-| `HF_HOME` | Weight cache; set automatically to the bundled cache in a packaged build |
+| `DEPTHWIZARD_PORT` | Fixed port |
+| `DEPTHWIZARD_MODEL_ID` | Backbone selection |
+| `DEPTHWIZARD_REFINE` / `_RADIUS` / `_EPSILON` | Guided filter (display-only) |
+| `DEPTHWIZARD_FLATTEN_ROOFS` | Building segmentation (display-only) |
+| `DEPTHWIZARD_FLATTEN_ITERATIONS` / `_KAPPA` | Diffusion (display-only) |
+| `DEPTHWIZARD_ARTIFACT_DIR` | Job outputs |
+| `DEPTHWIZARD_PUBLIC_BASE_URL` | Artifact origin behind a proxy |
+
+### Test data
+
+Five aligned RGB + LiDAR pairs in `data/sample/dc-*`. More:
+
+```powershell
+python scripts/download_dc_sample.py --scene rock-creek --size 1024
+```
+
+Presets: `downtown`, `mall`, `rock-creek`, `residential`, `waterfront`.
+
+**ISPRS Potsdam is not needed** for evaluation — only for fine-tuning. The DC
+ArcGIS services orthorectify on request, so each scene is ~4 MB rather than
+13 GB. Potsdam password, if ever needed: `CjwcipT4-P8g`.
 
 ---
 
-## 5. Next work, in priority order
+## 8. Next work
 
-### P0 — Blocking the packaged deliverable (COMPLETE)
+### P0 — before any demo
+1. **Rebuild the exe.** It is stale.
+2. **Default to Quality mode.** Measurably better for 0.4 s.
 
-1. **PyInstaller build & execution.** ✅ **Completed & verified** (`dist/DepthWizard/DepthWizard.exe` runs end-to-end with CUDA inference in 3.3s).
-2. **First-person navigation & flythrough.** ✅ **Completed & verified** (`TerrainViewer.tsx` with WASD, Q/E altitude, Shift boost, near plane 0.01, dynamic frameloop).
+### P1 — the only real accuracy headroom
+3. **Fine-tune Depth Anything V2 on aerial RGB/nDSM pairs.**
+   [arXiv 2507.09681](https://arxiv.org/pdf/2507.09681) reports ~24% RMSE
+   reduction — an order of magnitude more than any backbone swap measured here.
+   Needs ISPRS Potsdam (13.3 GB, 5 cm GSD, aligned float32 DSMs), a regression
+   head on the V2 encoder, and strict tile separation between calibration and
+   held-out evaluation. This is a project, not an afternoon.
 
-### P1 — Directly tied to the 50% accuracy score
+### P2 — visual fidelity
+4. **True building extrusion from footprints.** Vectorise segment boundaries,
+   fit each roof a polygon, extrude walls as real geometry. The current
+   grid-based extrusion approximates this per cell.
+5. **Normal map from full-resolution depth** — micro-relief beyond mesh
+   resolution, cheap.
+6. **SSAO** — needs `@react-three/postprocessing`; largest remaining realism win.
+7. **Validate on Indian imagery.** [Google Open Buildings 2.5D](https://sites.research.google/gr/open-buildings/temporal/)
+   has CC-BY heights for India at ~4 m. Note these are *model-predicted*, not
+   LiDAR — fine for validation, weak as a training target.
 
-3. **Scene-statistic / semantic-prior calibration.** The problem statement
-   permits "scene-level statistics, semantic priors" as calibration inputs, not
-   only DEM/GCP. This is the only route to metric height on non-georeferenced
-   images, which the repo currently cannot do at all. Shadow-length plus solar
-   azimuth is the classic approach.
-4. **Landscape-diversity validation.** The rubric names urban, sparse, hilly and
-   forested. Build an evaluation matrix across all four; currently only urban
-   (ISPRS Potsdam, DC) is covered.
-5. **In-UI validation view.** "Validate estimated height values against
-   reference datasets" is a named deliverable. Metrics currently surface only
-   via CLI and the API payload. Ensure high-visibility metric inspection in UI.
-
-### P2 — Depth and mesh quality (detailed analysis earlier in the session)
-
-6. **Mesh grid detail.** 16-bit grayscale PNG or Float32 height map for high-res mesh.
-7. **Percentile clipping destroys roofs.** ✅ **Completed.** (Adjusted to 0.5/99.5 in `backend/artifacts.py:40`).
-8. **Edge-aware filtering.** Replace frontend 3×3 Gaussian with edge-preserving guided filter using the RGB image as guide — depth edges snap cleanly to architectural and terrain boundaries.
-9. **Discontinuity culling.** Gate mesh triangles on `|Δh| < threshold` to prevent vertical rubber-sheeting on buildings.
-10. **Disparity is treated as height.** Depth Anything V2 outputs inverse depth (disparity); fit `h = a/(d + c) + b` or invert first in calibration to eliminate nonlinear tall-end compression.
-11. **Render realism.** `<Environment preset="city" />`, ACES tone mapping, SSAO, and configured directional shadow frustum.
-12. **Normal map from full-resolution depth.** Recovers micro-relief far beyond mesh resolution.
-13. **Model upgrade.** `apple/DepthPro` (metric/sharp boundaries) or `Depth-Anything-V2-Large-hf` as drop-in choices.
-
-### Explicitly out of scope
-
-Ground-level photo input and 360° equirectangular panoramas. The problem
-statement covers remote-sensing imagery only.
+### Out of scope
+Ground-level photos and 360° panoramas. The problem statement covers
+remote-sensing imagery only.
 
 ---
 
-## 6. Optional: reviving the cloud demo
+## 9. Cloud hosting — deprioritised, and why
 
-Only worth doing after P0/P1. The only free path is **Gradio + ZeroGPU**:
+The account is a **free personal account** (`isPro: false`). Per current HF
+docs: *"Gradio and Docker Spaces run on compute and require a paid plan to
+create: PRO for personal accounts... Free personal accounts in good standing
+can still host up to 2 Gradio Spaces running on ZeroGPU."*
 
-- Set `sdk: gradio` and a current `sdk_version` in the Space README frontmatter,
-  and switch hardware away from `zero-a10g` only if moving off ZeroGPU.
-- `import spaces` must precede any Torch import.
-- Route inference through a module-level `@spaces.GPU(duration=...)` function
-  using a global estimator — the canonical ZeroGPU pattern. A public
-  `set_depth_estimator()` seam in `ml/depth_anything.py` would let the entrypoint
-  install a GPU-wrapped estimator without touching private state.
-- Pin modern Gradio to avoid the `json_schema_to_python_type` crash.
-- ZeroGPU cannot be tested locally; every iteration is push, wait for build,
-  read logs.
+- Docker Spaces: **impossible**
+- CPU Basic on a compute Space: **impossible**
+- ZeroGPU + Gradio: possible, max 2 — the only free compute path
+- Static Spaces: free, no server-side compute
 
-`scripts/deploy_hf.ps1` builds a clean orphan commit and force-pushes it, using
-`deploy/hf-space/README.md` as the Space README. It restores the working branch
-in a `finally` block. Change that README's frontmatter to `sdk: gradio` before
-reusing it.
+An access token does not change this; plan tier is an account property.
+
+If revived, note that **ZeroGPU only allocates a GPU inside `@spaces.GPU`
+functions invoked from Gradio events** — FastAPI routes mounted alongside never
+get one. That is why the earlier attempt could not have worked regardless of
+the errors it threw.
+
+**Cloud hosting is not scored.** Standalone deployment is.
 
 ---
 
-## 7. Security note
+## 10. Security
 
-Two Hugging Face access tokens were shared in plaintext chat during this
-session, and one is stored unencrypted in `.git/config` as part of the `hf`
-remote URL. **Rotate both** at https://huggingface.co/settings/tokens, then
-reset the remote without embedded credentials:
+Two HF access tokens were shared in plaintext this session, and one is stored
+unencrypted in `.git/config` as part of the `hf` remote. **Rotate both** at
+https://huggingface.co/settings/tokens, then:
 
 ```powershell
 git remote set-url hf https://huggingface.co/spaces/MrT0nyStark/depthwizard-backend
@@ -281,28 +326,28 @@ git remote set-url hf https://huggingface.co/spaces/MrT0nyStark/depthwizard-back
 
 ---
 
-## 8. Scientific constraints (unchanged — do not relax)
+## 11. Scientific constraints — do not relax
 
-- RGB only → label output **Relative Depth / Relative DSM**. Never claim
-  absolute elevation.
-- Metric DSM requires a DEM, DSM, GCPs, or another elevation reference.
-- Fitting against the full ground-truth DSM is **benchmark calibration /
-  feasibility evaluation only**, never deployable accuracy.
-- The reconstruction is a **2.5D heightfield**, not photogrammetric 3D. It
-  cannot represent façades, overhangs, or truly vertical walls.
+- RGB only → label output **Relative Depth / Relative DSM**.
+- Metric DSM requires a reference: DEM, GCPs, or shadow geometry.
+- Fitting against the full ground-truth DSM is **benchmark / feasibility only**,
+  never deployable accuracy.
+- The reconstruction is a **2.5D heightfield**, not photogrammetric 3D.
+- Shadow-derived heights are **above local ground**, not a vertical datum.
 - Do not fabricate accuracy claims.
 
 ---
 
-## 9. Useful commands
+## 12. Commands
 
 ```powershell
-python -m pytest tests/                 # 19 tests
-cd frontend; npm run build              # tsc -b && vite build
-python desktop.py                       # standalone app
-python scripts/check_official_sac_data.py   # recheck the ISRO reference repo
+python -m pytest tests/                          # 19 tests
+cd frontend; npm run build                       # tsc -b && vite build
+python desktop.py                                # standalone app
+python scripts/compare_depth_backbones.py --image <scene>   # sharpness proxy only
+python scripts/check_official_sac_data.py        # recheck the ISRO reference repo
 ```
 
-Note: this workspace has a `PYTHONPATH` entry (`D:\claude-tools\pypkgs`) that
-shadows the venv's `pydantic` and breaks pytest collection. Clear it for the
-command if collection errors appear.
+`PYTHONPATH` in this workspace includes `D:\claude-tools\pypkgs`, which shadows
+the venv's `pydantic` and breaks pytest collection. Clear it if collection
+errors appear.
