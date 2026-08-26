@@ -1,5 +1,5 @@
-import { OrbitControls } from "@react-three/drei";
-import { Canvas, type ThreeEvent, useThree } from "@react-three/fiber";
+import { OrbitControls, PointerLockControls } from "@react-three/drei";
+import { Canvas, type ThreeEvent, useFrame, useThree } from "@react-three/fiber";
 import {
   ArrowDown,
   Expand,
@@ -9,6 +9,7 @@ import {
   Layers,
   Loader,
   Minimize,
+  Footprints,
   Palette,
   Play,
   RefreshCw,
@@ -28,6 +29,7 @@ const HEIGHT_SCALE = 0.55;
 
 type TextureState = "idle" | "loading" | "loaded" | "failed";
 type CameraPreset = "perspective" | "topdown";
+type NavigationMode = "orbit" | "walk";
 type SmoothingLevel = "none" | "subtle" | "balanced" | "smooth";
 
 interface TerrainViewerProps {
@@ -54,6 +56,11 @@ interface TerrainData {
   rows: number;
   minimum: number;
   maximum: number;
+  /** Post-filter heights in [0,1], row-major over columns x rows. */
+  normalized: Float32Array;
+  /** Scene-unit extent of the surface, used to map world x/z back to the grid. */
+  planeWidth: number;
+  planeDepth: number;
 }
 
 function getGridDimensions(grid: DepthGrid): { width: number; height: number } {
@@ -244,6 +251,7 @@ function createTerrainGeometry(
   const skirtPerimeterCount = columns * 2 + (rows - 2) * 2;
   const totalVertices = withSkirt ? topVertexCount + skirtPerimeterCount * 4 + 4 : topVertexCount;
 
+  const normalizedHeights = new Float32Array(topVertexCount);
   const positions = new Float32Array(totalVertices * 3);
   const colors = new Float32Array(totalVertices * 3);
   const uvs = new Float32Array(totalVertices * 2);
@@ -260,6 +268,7 @@ function createTerrainGeometry(
       const normalized = alreadyNormalized
         ? Math.max(0, Math.min(1, samples[index]))
         : Math.max(0, Math.min(1, (samples[index] - minimum) / range));
+      normalizedHeights[index] = normalized;
       const color = terrainColor(normalized);
 
       positions[index * 3] = (u - 0.5) * width;
@@ -366,7 +375,16 @@ function createTerrainGeometry(
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
 
-  return { geometry, columns, rows, minimum, maximum };
+  return {
+    geometry,
+    columns,
+    rows,
+    minimum,
+    maximum,
+    normalized: normalizedHeights,
+    planeWidth: width,
+    planeDepth: depth,
+  };
 }
 
 function extractBounds(geospatial: GeospatialMetadata): [number, number, number, number] | null {
@@ -417,6 +435,126 @@ function projectPixel(
     mapY,
     coordinateKind: crs.includes("4326") || crs.includes("wgs 84") ? "geographic" : "projected",
   };
+}
+
+
+/** Eye height above the surface, in scene units, for first-person navigation. */
+const MIN_EYE_HEIGHT = 0.08;
+const WALK_SPEED = 1.35;
+const RUN_MULTIPLIER = 2.6;
+
+/**
+ * Sample the terrain height at a world x/z position.
+ *
+ * The mesh is scaled on Y by `exaggeration`, so the sampled normalized height
+ * is mapped through the same transform the geometry used.
+ */
+function surfaceHeightAt(data: TerrainData, x: number, z: number, exaggeration: number): number {
+  const u = x / data.planeWidth + 0.5;
+  const v = z / data.planeDepth + 0.5;
+  const gx = Math.max(0, Math.min(data.columns - 1, u * (data.columns - 1)));
+  const gz = Math.max(0, Math.min(data.rows - 1, v * (data.rows - 1)));
+  const x0 = Math.floor(gx);
+  const z0 = Math.floor(gz);
+  const x1 = Math.min(data.columns - 1, x0 + 1);
+  const z1 = Math.min(data.rows - 1, z0 + 1);
+  const fx = gx - x0;
+  const fz = gz - z0;
+
+  const h00 = data.normalized[z0 * data.columns + x0];
+  const h10 = data.normalized[z0 * data.columns + x1];
+  const h01 = data.normalized[z1 * data.columns + x0];
+  const h11 = data.normalized[z1 * data.columns + x1];
+  const top = h00 * (1 - fx) + h10 * fx;
+  const bottom = h01 * (1 - fx) + h11 * fx;
+  const normalized = top * (1 - fz) + bottom * fz;
+
+  return (normalized - 0.5) * HEIGHT_SCALE * exaggeration;
+}
+
+/**
+ * First-person flythrough & walk camera: pointer-lock look, WASD movement,
+ * Q/E or Space/C altitude adjustments, and an eye height clamped above the surface.
+ */
+function WalkControls({
+  data,
+  exaggeration,
+  onExit,
+}: {
+  data: TerrainData;
+  exaggeration: number;
+  onExit: () => void;
+}) {
+  const { camera } = useThree();
+  const keys = useRef<Record<string, boolean>>({});
+  const forward = useRef(new THREE.Vector3());
+  const right = useRef(new THREE.Vector3());
+  const altitudeOffset = useRef(MIN_EYE_HEIGHT + 0.12);
+
+  useEffect(() => {
+    // Start above the front-centre of the surface looking slightly forward.
+    const startY = surfaceHeightAt(data, 0, data.planeDepth * 0.35, exaggeration) + MIN_EYE_HEIGHT + 0.15;
+    camera.position.set(0, startY, data.planeDepth * 0.38);
+    camera.lookAt(0, startY, 0);
+    altitudeOffset.current = MIN_EYE_HEIGHT + 0.15;
+
+    const down = (event: KeyboardEvent) => {
+      keys.current[event.code] = true;
+      if (event.code === "Escape") onExit();
+    };
+    const up = (event: KeyboardEvent) => {
+      keys.current[event.code] = false;
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      keys.current = {};
+    };
+  }, [camera, data, exaggeration, onExit]);
+
+  useFrame((_, delta) => {
+    const pressed = keys.current;
+    const step =
+      WALK_SPEED * (pressed.ShiftLeft || pressed.ShiftRight ? RUN_MULTIPLIER : 1) *
+      Math.min(delta, 0.1);
+
+    camera.getWorldDirection(forward.current);
+    forward.current.y = 0;
+    if (forward.current.lengthSq() > 0) forward.current.normalize();
+    right.current.crossVectors(forward.current, camera.up).normalize();
+
+    let moved = false;
+    if (pressed.KeyW || pressed.ArrowUp) { camera.position.addScaledVector(forward.current, step); moved = true; }
+    if (pressed.KeyS || pressed.ArrowDown) { camera.position.addScaledVector(forward.current, -step); moved = true; }
+    if (pressed.KeyD || pressed.ArrowRight) { camera.position.addScaledVector(right.current, step); moved = true; }
+    if (pressed.KeyA || pressed.ArrowLeft) { camera.position.addScaledVector(right.current, -step); moved = true; }
+
+    // Altitude controls (Space/E to climb, C/Q to descend)
+    if (pressed.Space || pressed.KeyE) {
+      altitudeOffset.current = Math.min(3.5, altitudeOffset.current + step * 0.85);
+      moved = true;
+    }
+    if (pressed.KeyC || pressed.KeyQ) {
+      altitudeOffset.current = Math.max(MIN_EYE_HEIGHT, altitudeOffset.current - step * 0.85);
+      moved = true;
+    }
+
+    // Stay inside the surface footprint
+    const halfWidth = data.planeWidth / 2;
+    const halfDepth = data.planeDepth / 2;
+    camera.position.x = Math.max(-halfWidth, Math.min(halfWidth, camera.position.x));
+    camera.position.z = Math.max(-halfDepth, Math.min(halfDepth, camera.position.z));
+
+    const groundY = surfaceHeightAt(data, camera.position.x, camera.position.z, exaggeration);
+    const targetY = groundY + altitudeOffset.current;
+    // Ease vertically so cresting a rooftop edge or hill does not snap abruptly
+    camera.position.y += (targetY - camera.position.y) * Math.min(1, delta * 12);
+    if (moved) camera.updateMatrixWorld();
+  });
+
+  return <PointerLockControls makeDefault onUnlock={onExit} />;
 }
 
 function CameraControls({
@@ -563,7 +701,14 @@ function TerrainMesh({
       receiveShadow
       castShadow
     >
+      {/*
+        `map` and `vertexColors` both change the compiled shader's defines. The
+        texture arrives asynchronously, so without remounting the material the
+        program built for vertex colours is kept and the satellite imagery never
+        appears. Keying on the mode forces a fresh material and shader compile.
+      */}
       <meshStandardMaterial
+        key={hasTexture ? "textured" : "vertex-colored"}
         map={hasTexture ? texture : null}
         vertexColors={!hasTexture}
         wireframe={wireframe}
@@ -585,6 +730,7 @@ export default function TerrainViewer({
 }: TerrainViewerProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [materialMode, setMaterialMode] = useState<"texture" | "height">(textureUrl ? "texture" : "height");
+  const [navMode, setNavMode] = useState<NavigationMode>("orbit");
   const [smoothing, setSmoothing] = useState<SmoothingLevel>("balanced");
   const [detrend, setDetrend] = useState(false);
   const [withSkirt, setWithSkirt] = useState(true);
@@ -629,6 +775,7 @@ export default function TerrainViewer({
   }, []);
 
   const handleTopDown = useCallback(() => {
+    setNavMode("orbit");
     setCameraPreset((current) => (current === "topdown" ? "perspective" : "topdown"));
   }, []);
 
@@ -729,6 +876,17 @@ export default function TerrainViewer({
             <Grid3X3 size={14} />
             <span>Wireframe</span>
           </button>
+          <button
+            type="button"
+            className={`viewer-control${navMode === "walk" ? " is-active" : ""}`}
+            onClick={() => setNavMode((current) => (current === "walk" ? "orbit" : "walk"))}
+            aria-pressed={navMode === "walk"}
+            aria-label="Toggle first-person flythrough mode"
+            title="First-person flythrough (Click to enter: WASD move, Q/E altitude, Mouse look, ESC exit)"
+          >
+            <Footprints size={14} />
+            <span>{navMode === "walk" ? "Exit Fly" : "Flythrough"}</span>
+          </button>
         </div>
 
         <label className="exaggeration-control" title="Adjust 3D height scale">
@@ -769,6 +927,7 @@ export default function TerrainViewer({
             className="viewer-control viewer-control--icon"
             onClick={() => {
               setResetKey((key) => key + 1);
+              setNavMode("orbit");
               setCameraPreset("perspective");
               setAutoRotate(false);
             }}
@@ -791,9 +950,9 @@ export default function TerrainViewer({
 
       <div className="terrain-canvas" role="img" aria-label="Interactive photorealistic predicted terrain reconstruction">
         <Canvas
-          camera={{ position: PERSPECTIVE_CAMERA_POSITION, fov: 42, near: 0.1, far: 100 }}
+          camera={{ position: PERSPECTIVE_CAMERA_POSITION, fov: 42, near: 0.01, far: 100 }}
           dpr={[1, 2]}
-          frameloop="demand"
+          frameloop={navMode === "walk" || autoRotate ? "always" : "demand"}
           gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
           shadows
         >
@@ -829,7 +988,11 @@ export default function TerrainViewer({
           />
 
           <gridHelper args={[14, 28, "#1a4652", "#0c232a"]} position={[0, -0.62, 0]} />
-          <CameraControls resetKey={resetKey} preset={cameraPreset} autoRotate={autoRotate} />
+          {navMode === "walk" ? (
+            <WalkControls data={terrain} exaggeration={exaggeration} onExit={() => setNavMode("orbit")} />
+          ) : (
+            <CameraControls resetKey={resetKey} preset={cameraPreset} autoRotate={autoRotate} />
+          )}
         </Canvas>
       </div>
 
@@ -854,6 +1017,10 @@ export default function TerrainViewer({
             ) : null}
           </div>
           <button type="button" className="icon-button" onClick={() => setSample(null)} aria-label="Clear selected point">×</button>
+        </div>
+      ) : navMode === "walk" ? (
+        <div className="terrain-hint terrain-hint--walk">
+          🎮 Flythrough Active · Click canvas to lock · WASD: Fly · Q/E: Height · Shift: Turbo · ESC: Orbit
         </div>
       ) : (
         <div className="terrain-hint">Drag to orbit · Scroll to zoom · Click the 3D surface to inspect elevation</div>

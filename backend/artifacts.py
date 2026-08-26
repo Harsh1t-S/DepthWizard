@@ -37,7 +37,7 @@ def normalize_for_preview(
     output = np.zeros(array.shape, dtype=np.float32)
     if not valid.any():
         return output
-    low, high = np.percentile(array[valid], (2.0, 98.0))
+    low, high = np.percentile(array[valid], (0.5, 99.5))
     if not np.isfinite(low) or not np.isfinite(high) or high <= low:
         low = float(array[valid].min())
         high = float(array[valid].max())
