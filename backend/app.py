@@ -227,11 +227,14 @@ def create_app(artifact_root: Path | None = None) -> FastAPI:
         try:
             return await run_in_threadpool(work)
         except (ModelLoadError, ModelInferenceError) as exc:
-            # There is intentionally no fake live result when model loading or
-            # inference fails. The explicit synthetic fixture remains /api/demo.
+            logger.exception("Model load or inference failure in /api/analyze: %s", exc)
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
+            logger.warning("Validation error in /api/analyze: %s", exc)
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("Unexpected error in /api/analyze: %s", exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     # follow_symlink makes StaticFiles compare an absolute path against the
     # served directory instead of a fully resolved one.

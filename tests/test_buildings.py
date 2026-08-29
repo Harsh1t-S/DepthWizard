@@ -22,6 +22,25 @@ def test_building_footprints_create_an_oriented_solid() -> None:
     assert 0.0 <= max(point[1] for point in footprint["points"]) <= 1.0
 
 
+def test_building_footprints_preserve_a_concave_roof_outline() -> None:
+    labels = np.zeros((512, 512), dtype=np.int32)
+    labels[70:118, 72:88] = 1
+    labels[102:118, 72:136] = 1
+    ground = np.full(labels.shape, 0.15, dtype=np.float32)
+    roofs = ground.copy()
+    roofs[labels == 1] = 0.76
+
+    footprints = make_building_footprints(labels, roofs, ground)
+
+    assert len(footprints) == 1
+    points = np.asarray(footprints[0]["points"], dtype=np.float64)
+    assert len(points) >= 6
+    x, y = points[:, 0], points[:, 1]
+    polygon_area = abs(0.5 * np.sum(x * np.roll(y, -1) - y * np.roll(x, -1)))
+    bounding_area = float(np.ptp(x) * np.ptp(y))
+    assert polygon_area < bounding_area * 0.75
+
+
 def test_flatten_can_return_private_segmentation_for_rendering() -> None:
     heights = np.zeros((96, 96), dtype=np.float32)
     heights[34:58, 30:62] = 0.8

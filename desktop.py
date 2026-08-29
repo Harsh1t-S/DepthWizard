@@ -17,6 +17,12 @@ from __future__ import annotations
 import os
 import socket
 import sys
+
+# Remove any external shadowing tool paths if present
+sys.path = [p for p in sys.path if "claude-tools" not in p]
+if "claude-tools" in os.environ.get("PYTHONPATH", ""):
+    os.environ["PYTHONPATH"] = ""
+
 import threading
 import time
 import urllib.error

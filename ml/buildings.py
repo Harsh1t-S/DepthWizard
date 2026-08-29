@@ -15,11 +15,11 @@ labelling are short enough in NumPy to not be worth another dependency.
 from __future__ import annotations
 
 import numpy as np
+from rasterio.features import shapes as raster_shapes
 
-
-DEFAULT_GROUND_RADIUS = 48
-DEFAULT_HEIGHT_THRESHOLD = 0.06
-DEFAULT_MIN_AREA = 24
+DEFAULT_GROUND_RADIUS = 32
+DEFAULT_HEIGHT_THRESHOLD = 0.035
+DEFAULT_MIN_AREA = 16
 
 
 def _sliding_reduce(array: np.ndarray, radius: int, reducer) -> np.ndarray:
@@ -105,6 +105,121 @@ def label_regions(mask: np.ndarray, min_area: int = DEFAULT_MIN_AREA) -> tuple[n
     return keep[labels], surviving
 
 
+def _simplify_polyline(points: np.ndarray, tolerance: float) -> np.ndarray:
+    """Simplify an open polyline with iterative Ramer-Douglas-Peucker."""
+
+    if len(points) <= 2:
+        return points
+
+    keep = np.zeros(len(points), dtype=bool)
+    keep[0] = keep[-1] = True
+    pending = [(0, len(points) - 1)]
+    tolerance_squared = tolerance * tolerance
+
+    while pending:
+        start, end = pending.pop()
+        if end <= start + 1:
+            continue
+        origin = points[start]
+        segment = points[end] - origin
+        segment_squared = float(segment @ segment)
+        candidates = points[start + 1 : end]
+        if segment_squared <= np.finfo(np.float64).eps:
+            distances_squared = np.sum((candidates - origin) ** 2, axis=1)
+        else:
+            projections = np.clip(((candidates - origin) @ segment) / segment_squared, 0.0, 1.0)
+            closest = origin + projections[:, None] * segment
+            distances_squared = np.sum((candidates - closest) ** 2, axis=1)
+        relative = int(np.argmax(distances_squared))
+        if float(distances_squared[relative]) <= tolerance_squared:
+            continue
+        index = start + 1 + relative
+        keep[index] = True
+        pending.append((start, index))
+        pending.append((index, end))
+
+    return points[keep]
+
+
+def _signed_polygon_area(points: np.ndarray) -> float:
+    if len(points) < 3:
+        return 0.0
+    x = points[:, 0]
+    y = points[:, 1]
+    return float(0.5 * np.sum(x * np.roll(y, -1) - y * np.roll(x, -1)))
+
+
+def _simplify_closed_ring(points: np.ndarray, max_vertices: int = 32) -> np.ndarray | None:
+    """Simplify a closed raster outline while preserving its winding."""
+
+    ring = np.asarray(points, dtype=np.float64)
+    if len(ring) > 1 and np.allclose(ring[0], ring[-1]):
+        ring = ring[:-1]
+    if len(ring) < 3:
+        return None
+
+    consecutive = np.ones(len(ring), dtype=bool)
+    consecutive[1:] = np.any(np.abs(ring[1:] - ring[:-1]) > 1e-9, axis=1)
+    ring = ring[consecutive]
+    if len(ring) < 3:
+        return None
+
+    original_area = _signed_polygon_area(ring)
+    if abs(original_area) <= np.finfo(np.float64).eps:
+        return None
+
+    opposite = int(np.argmax(np.sum((ring - ring[0]) ** 2, axis=1)))
+    if opposite <= 0:
+        return None
+
+    first_half = ring[: opposite + 1]
+    second_half = np.vstack((ring[opposite:], ring[:1]))
+    simplified = ring
+    tolerance = 0.65
+    for _ in range(12):
+        first = _simplify_polyline(first_half, tolerance)
+        second = _simplify_polyline(second_half, tolerance)
+        candidate = np.vstack((first[:-1], second[:-1]))
+        if len(candidate) >= 3 and abs(_signed_polygon_area(candidate)) > 1e-6:
+            simplified = candidate
+        if len(simplified) <= max_vertices:
+            break
+        tolerance *= 1.45
+
+    if len(simplified) > max_vertices:
+        return None
+    if _signed_polygon_area(simplified) * original_area < 0:
+        simplified = simplified[::-1]
+    return simplified
+
+
+def _vectorize_region_outlines(labels: np.ndarray) -> dict[int, np.ndarray]:
+    """Return a compact exterior polygon for each connected label."""
+
+    regions = np.asarray(labels, dtype=np.int32)
+    outlines: dict[int, np.ndarray] = {}
+    outline_areas: dict[int, float] = {}
+    for geometry, raw_label in raster_shapes(
+        regions,
+        mask=regions > 0,
+        connectivity=4,
+    ):
+        label = int(raw_label)
+        if label <= 0 or geometry.get("type") != "Polygon":
+            continue
+        coordinates = geometry.get("coordinates", [])
+        if not coordinates:
+            continue
+        outline = _simplify_closed_ring(np.asarray(coordinates[0], dtype=np.float64))
+        if outline is None:
+            continue
+        area = abs(_signed_polygon_area(outline))
+        if area > outline_areas.get(label, 0.0):
+            outlines[label] = outline
+            outline_areas[label] = area
+    return outlines
+
+
 def flatten_building_roofs(
     heights: np.ndarray,
     ground_radius: int = DEFAULT_GROUND_RADIUS,
@@ -179,16 +294,16 @@ def make_building_footprints(
     ground: np.ndarray,
     *,
     rgb: np.ndarray | None = None,
-    max_buildings: int = 280,
-    minimum_fill: float = 0.30,
+    max_buildings: int = 500,
+    minimum_fill: float = 0.28,
 ) -> list[dict[str, object]]:
-    """Create compact oriented roof footprints for display-only extrusion.
+    """Create compact mask-derived roof footprints for display-only extrusion.
 
-    Each connected component is approximated by a PCA-oriented rectangle. The
-    result is intentionally small JSON rather than a dense segmentation mask,
-    and gives the browser actual roof polygons and vertical wall locations.
-    Irregular, extremely thin components are rejected because they are usually
-    roads, trees, or monocular-depth artefacts rather than buildings.
+    Each connected component is vectorized into a simplified exterior polygon.
+    Its PCA-oriented rectangle is still used to reject irregular, extremely
+    thin components, which are usually roads, trees, or monocular-depth
+    artefacts rather than buildings. The result stays compact JSON rather than
+    a dense segmentation mask and gives the browser true wall locations.
     """
 
     regions = np.asarray(labels, dtype=np.int32)
@@ -205,12 +320,12 @@ def make_building_footprints(
 
     height, width = regions.shape
     scene_spread = float(np.nanmax(roofs) - np.nanmin(roofs))
-    # The segmentation mask already requires a 6% local rise. Using another
-    # high median-relief cutoff here discarded many low urban roofs after plane
-    # fitting, leaving their original mounds visible in flythrough mode.
-    minimum_relief = max(scene_spread * 0.018, np.finfo(np.float32).eps)
+    # Adaptive relief cutoff to detect both low suburban residential roofs
+    # and tall commercial structures without leaving mounds.
+    minimum_relief = max(scene_spread * 0.012, np.finfo(np.float32).eps)
     counts = np.bincount(regions.reshape(-1))
     ordered_labels = np.argsort(counts[1:])[::-1] + 1
+    vectorized_outlines = _vectorize_region_outlines(regions)
     footprints: list[dict[str, object]] = []
 
     for label in ordered_labels:
@@ -239,11 +354,12 @@ def make_building_footprints(
         rectangle_area = float(spans[0] * spans[1])
         fill = float(area / rectangle_area)
         aspect = float(max(spans) / max(1.0, min(spans)))
-        if fill < minimum_fill or aspect > 12.0:
+        # Reject thin needle columns, fence lines, and non-building spikes
+        if fill < minimum_fill or aspect > 6.5 or min(spans) < 3.5:
             continue
-        # A huge, loosely rectangular region is normally a hill, lake, or tree
-        # canopy merged by the relative-depth threshold rather than one roof.
-        if rectangle_area / float(height * width) > 0.018 and fill < 0.72:
+        # Reject huge, amorphous regions (hills, large forests, rivers) while
+        # accepting large complexes, schools, malls, and L/U-shaped structures.
+        if rectangle_area / float(height * width) > 0.40 and fill < 0.22:
             continue
 
         green_fraction = 0.0
@@ -252,19 +368,18 @@ def make_building_footprints(
             colours = image[rows, columns, :3].astype(np.float32)
             red, green, blue = colours[:, 0], colours[:, 1], colours[:, 2]
             green_excess = green - 0.5 * (red + blue)
-            green_fraction = float(np.mean((green_excess > 10.0) & (green > 45.0)))
+            green_fraction = float(np.mean((green_excess > 12.0) & (green > 45.0)))
             water_fraction = float(
                 np.mean((blue - red > 14.0) & (blue >= green * 0.92) & (green < 165.0))
             )
             region_fraction = rectangle_area / float(height * width)
-            # Strong green is reliable even for small tree crowns. Blue/dark
-            # rejection is restricted to large regions because many urban
-            # orthophotos carry a cool cast and otherwise lose real rooftops.
-            if green_fraction > 0.58:
+            # True tree canopies are dominated by green. Houses with trees/lawns nearby
+            # remain accepted unless the region is primarily foliage.
+            if green_fraction > 0.65:
                 continue
-            if region_fraction > 0.003 and green_fraction > 0.30:
+            if region_fraction > 0.02 and green_fraction > 0.48:
                 continue
-            if region_fraction > 0.006 and water_fraction > 0.50:
+            if region_fraction > 0.02 and water_fraction > 0.50:
                 continue
 
         roof_height = float(np.nanmedian(roofs[rows, columns]))
@@ -286,18 +401,26 @@ def make_building_footprints(
         corners = projected_corners @ axes.T + centre
         corners[:, 0] = np.clip(corners[:, 0], 0, max(0, width - 1))
         corners[:, 1] = np.clip(corners[:, 1], 0, max(0, height - 1))
-        normalized_corners = [
+        outline = vectorized_outlines.get(int(label), corners)
+        # Raster polygon coordinates describe pixel edges in [0, width/height].
+        # Shift them onto the sample-centre coordinate system used by the mesh.
+        outline = outline.copy()
+        if int(label) in vectorized_outlines:
+            outline -= 0.5
+        outline[:, 0] = np.clip(outline[:, 0], 0, max(0, width - 1))
+        outline[:, 1] = np.clip(outline[:, 1], 0, max(0, height - 1))
+        normalized_outline = [
             [
                 float(column / max(1, width - 1)),
                 float(row / max(1, height - 1)),
             ]
-            for column, row in corners
+            for column, row in outline
         ]
 
         footprints.append(
             {
                 "_label": int(label),
-                "points": normalized_corners,
+                "points": normalized_outline,
                 "roof_height": roof_height,
                 "base_height": base_height,
                 "area_pixels": area,

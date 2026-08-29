@@ -20,6 +20,7 @@ if (Test-Path -LiteralPath $VenvPython) {
     $Python = $PythonCommand.Source
 }
 
+$env:PYTHONPATH = ""
 & $Python -m uvicorn backend.app:app --host $BindAddress --port $Port
 exit $LASTEXITCODE
 

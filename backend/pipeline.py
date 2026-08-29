@@ -35,6 +35,7 @@ from .evaluation import (
 )
 from .model import QUALITY_MODES, DepthEstimator, PredictionInfo, get_depth_estimator
 from ml.buildings import flatten_building_roofs, make_building_footprints
+from ml.osm import fetch_osm_footprints
 from ml.refine import flatten_surfaces, refine_depth_with_image
 
 from .scene_calibration import calibrate_from_scene_shadows
@@ -619,7 +620,81 @@ def analyze_bytes(
     domain_minimum = float(mesh_heights[domain_valid].min()) if domain_valid.any() else 0.0
     domain_maximum = float(mesh_heights[domain_valid].max()) if domain_valid.any() else 1.0
     building_footprints: list[dict[str, object]] = []
-    if building_labels is not None and building_ground is not None:
+
+    # For georeferenced scenes with a CRS, query OpenStreetMap (OSM) vector
+    # building polygons. Real vector footprints provide blueprint-accurate 90°
+    # corners and exact property boundaries, combined with ML-derived heights.
+    if source.crs is not None and source.transform is not None and source.geospatial is not None:
+        try:
+            osm_raw = fetch_osm_footprints(
+                source_crs=source.crs,
+                bounds=source.geospatial.get("bounds", {}),
+                width=source.width,
+                height=source.height,
+                transform=source.transform,
+            )
+            if osm_raw and building_ground is not None:
+                scene_spread = float(np.nanmax(mesh_heights) - np.nanmin(mesh_heights))
+                min_relief = max(scene_spread * 0.012, 1e-4)
+                osm_fps: list[dict[str, object]] = []
+                for fp in osm_raw:
+                    pts = np.asarray(fp["points"])
+                    cols = np.clip(np.round(pts[:, 0] * (source.width - 1)).astype(int), 0, source.width - 1)
+                    rows = np.clip(np.round(pts[:, 1] * (source.height - 1)).astype(int), 0, source.height - 1)
+                    base_h = float(np.nanmedian(building_ground[rows, cols]))
+                    
+                    # Search local neighborhood for off-nadir relief displacement (tilted satellite lean)
+                    c_min, c_max = max(0, int(cols.min()) - 20), min(source.width, int(cols.max()) + 21)
+                    r_min, r_max = max(0, int(rows.min()) - 20), min(source.height, int(rows.max()) + 21)
+                    sub_mesh = mesh_heights[r_min:r_max, c_min:c_max]
+                    
+                    roof_h = float(np.nanmax(mesh_heights[rows, cols]))
+                    if not np.isfinite(base_h) or not np.isfinite(roof_h):
+                        continue
+                    
+                    # If off-nadir tilt shifted the visible roof peak away from the ground foundation,
+                    # shift the roof footprint points towards the visible peak
+                    snapped_points = fp["points"]
+                    if sub_mesh.size > 0:
+                        peak_val = float(np.nanmax(sub_mesh))
+                        if peak_val > roof_h + 0.015:
+                            roof_h = peak_val
+                            pr, pc = np.unravel_index(np.nanargmax(sub_mesh), sub_mesh.shape)
+                            peak_r, peak_c = r_min + pr, c_min + pc
+                            poly_center_r, poly_center_c = rows.mean(), cols.mean()
+                            dr = (peak_r - poly_center_r) / max(1, source.height - 1)
+                            dc = (peak_c - poly_center_c) / max(1, source.width - 1)
+                            if abs(dr * source.height) <= 30 and abs(dc * source.width) <= 30:
+                                snapped_points = [
+                                    [float(np.clip(p[0] + dc * 0.75, 0.0, 1.0)), float(np.clip(p[1] + dr * 0.75, 0.0, 1.0))]
+                                    for p in fp["points"]
+                                ]
+
+                    levels = fp.get("levels")
+                    if levels is not None and levels > 0 and roof_h - base_h < min_relief:
+                        roof_h = base_h + min_relief * float(levels)
+                    elif roof_h - base_h < min_relief:
+                        roof_h = base_h + min_relief * 1.5
+
+                    osm_fps.append({
+                        "points": snapped_points,
+                        "roof_height": roof_h,
+                        "base_height": base_h,
+                        "source": "osm",
+                        "name": fp.get("name"),
+                        "building_type": fp.get("building_type"),
+                    })
+                if len(osm_fps) >= 10:
+                    building_footprints = osm_fps
+                    notices.append(
+                        f"{len(osm_fps)} blueprint-accurate vector building footprints were loaded "
+                        "from OpenStreetMap (OSM) with ML-derived heights and vertical wall geometry."
+                    )
+        except Exception:
+            pass
+
+    # Fall back to image-guided neural segmentation when OSM is unavailable or empty
+    if not building_footprints and building_labels is not None and building_ground is not None:
         building_footprints = make_building_footprints(
             building_labels,
             mesh_heights,

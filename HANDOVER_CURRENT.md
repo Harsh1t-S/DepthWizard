@@ -2,8 +2,8 @@
 
 **Repository:** https://github.com/Harsh1t-S/DepthWizard
 **Workspace:** `D:\Downloads\SIH26175`
-**Branch:** `main` — clean
-**Last updated:** 2026-08-27
+**Branch:** `main`
+**Last updated:** 2026-08-29
 
 ---
 
@@ -100,7 +100,7 @@ commands in `docs/MODEL_RESEARCH.md`.
 Two traps recorded there: **`DA3-LARGE` is CC-BY-NC** (non-commercial — a real
 risk for an ISRO submission), and installing `depth-anything-3` pulled 60+
 packages and **downgraded numpy to 1.26, breaking rasterio's stated
-`numpy>=2`**. Everything runs and all 19 tests pass, but that conflict is live
+`numpy>=2`**. Everything runs and all 23 tests pass, but that conflict is live
 in the environment.
 
 ---
@@ -136,7 +136,7 @@ bright roofs as high. It looks sharper and measures worse.
 | Guided filter | `ml/refine.py` | Edge alignment 0.046 → 0.326 |
 | Roof plane fitting | `ml/buildings.py` | 48 buildings found; planarity residual 0.326 → 0.020 (94%) |
 | Anisotropic diffusion | `ml/refine.py` | Surfaces ~65% flatter |
-| Wall extrusion | `TerrainViewer.tsx` | Vertical faces at height steps |
+| Building solids | `ml/buildings.py`, `TerrainViewer.tsx` | Simplified mask-derived polygons, triangulated roofs, vertical facades |
 | Normal map | `backend/artifacts.py` | Lighting detail beyond mesh resolution |
 
 ### Transport
@@ -151,12 +151,12 @@ the full-resolution prediction.
 
 ## 5. Known limitations — state these honestly
 
-1. **Buildings are not architecturally correct.** Roofs are planar and walls are
-   extruded, but close up a building is still a rounded volume with roof texture
-   draped over it. Three causes: mesh resolution (fixed), the backbone's soft
-   boundaries on nadir imagery (needs fine-tuning), and the fact that **a
-   heightfield cannot represent a vertical wall** — one surface, one height per
-   cell. The third is structural, not a bug.
+1. **Buildings are not architecturally correct.** Accepted segmentation masks
+   are now vectorized into simplified polygons (up to 32 exterior vertices),
+   triangulated as roofs, and extruded with true vertical walls. Concave outlines
+   survive, but the masks still inherit the backbone's soft or merged boundaries,
+   holes/courtyards are not represented, and satellite roof texture cannot supply
+   facade imagery or architectural detail.
 2. **This is 2.5D, not photogrammetric 3D.** No façades, no overhangs.
 3. **Shadow heights are above local ground, not a datum.** Nothing in one image
    fixes mean sea level. When an evaluation DSM is supplied a single constant
@@ -250,10 +250,13 @@ ArcGIS services orthorectify on request, so each scene is ~4 MB rather than
    held-out evaluation. A project, not an afternoon.
 
 ### P2 — visual fidelity
-2. **True building extrusion from footprints.** Vectorise segment boundaries,
-   fit each roof a polygon, extrude walls as real geometry. The current
-   grid-based extrusion approximates this per cell.
-3. **SSAO**, if the `three` upgrade is acceptable. See limitation 6.
+2. **Georeferenced Open Buildings prior.** For scenes with a CRS, optionally use
+   [Open Buildings V3 polygons](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_Research_open-buildings_v3_polygons)
+   (CC-BY-4.0) instead of inferred roof masks. Google Earth/Maps basemap imagery
+   and Photorealistic 3D Tiles are visualization-only under Google's terms and
+   must not be used for model input, image analysis, geometry extraction, or
+   offline assets.
+3. **SSAO**, if the `three` upgrade is acceptable. See limitation 8.
 4. **Validate on Indian imagery.** [Google Open Buildings 2.5D](https://sites.research.google/gr/open-buildings/temporal/)
    has CC-BY heights for India at ~4 m. These are *model-predicted*, not LiDAR —
    fine for validation, weak as a training target.
@@ -311,6 +314,10 @@ errors it threw.
    sun 39.8° below the horizon.
 6. **Shadow results mislabelled** as "Benchmark fit / not deployment" whenever
    ground truth was present, though shadow calibration never sees it.
+7. **Auto-rotate appeared active but stayed frozen.** Orbit mode renders on
+   demand, so `OrbitControls` received no frames after its initial state change.
+   A scoped animation-frame pump now invalidates the canvas only while cinematic
+   orbit is enabled.
 
 ### A caution about measurement
 
@@ -353,7 +360,7 @@ git remote set-url hf https://huggingface.co/spaces/MrT0nyStark/depthwizard-back
 ## 12. Commands
 
 ```powershell
-python -m pytest tests/                          # 19 tests
+python -m pytest tests/                          # 23 tests
 cd frontend; npm run build                       # tsc -b && vite build
 python desktop.py                                # standalone app
 python scripts/compare_depth_backbones.py --image <scene>   # sharpness proxy only

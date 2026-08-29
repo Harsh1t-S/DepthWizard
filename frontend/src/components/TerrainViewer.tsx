@@ -485,7 +485,14 @@ function createTerrainGeometry(
   };
 }
 
-/** Build real polygon roofs and vertical facade quads above the DSM surface. */
+interface BuildingGeometryData {
+  roofs: THREE.BufferGeometry;
+  walls: THREE.BufferGeometry;
+  edges: THREE.BufferGeometry;
+  count: number;
+}
+
+/** Build real polygon roofs, sharp architectural roof edge lines, and vertical facade quads. */
 function createBuildingGeometry(
   footprints: BuildingFootprint[],
   terrain: TerrainData,
@@ -496,7 +503,9 @@ function createBuildingGeometry(
   const roofUvs: number[] = [];
   const roofIndices: number[] = [];
   const wallPositions: number[] = [];
+  const wallColors: number[] = [];
   const wallIndices: number[] = [];
+  const edgePositions: number[] = [];
   const range = terrain.maximum - terrain.minimum || 1;
   const alreadyNormalized = terrain.minimum >= -0.01 && terrain.maximum <= 1.01 && range <= 1.02;
   const normalize = (value: number) => Math.max(
@@ -507,16 +516,34 @@ function createBuildingGeometry(
 
   for (const footprint of footprints) {
     if (!Array.isArray(footprint.points) || footprint.points.length < 3) continue;
-    const points = footprint.points.filter(
-      (point): point is [number, number] =>
-        Array.isArray(point) && point.length >= 2 && Number.isFinite(point[0]) && Number.isFinite(point[1]),
+    const points: [number, number][] = [];
+    for (const point of footprint.points) {
+      if (!Array.isArray(point) || point.length < 2 || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) {
+        continue;
+      }
+      const candidate: [number, number] = [point[0], point[1]];
+      const previous = points.at(-1);
+      if (!previous || Math.abs(previous[0] - candidate[0]) > 1e-9 || Math.abs(previous[1] - candidate[1]) > 1e-9) {
+        points.push(candidate);
+      }
+    }
+    const first = points[0];
+    const last = points.at(-1);
+    if (points.length > 3 && first && last && Math.abs(first[0] - last[0]) <= 1e-9 && Math.abs(first[1] - last[1]) <= 1e-9) {
+      points.pop();
+    }
+    if (points.length < 3) continue;
+
+    const triangles = THREE.ShapeUtils.triangulateShape(
+      points.map(([u, v]) => new THREE.Vector2(u, v)),
+      [],
     );
-    if (points.length !== 4) continue;
+    if (!triangles.length) continue;
 
     const roofNormalized = normalize(Number(footprint.roof_height));
     const baseNormalized = normalize(Number(footprint.base_height));
     if (!Number.isFinite(roofNormalized) || !Number.isFinite(baseNormalized)) continue;
-    if (roofNormalized <= baseNormalized + 0.008) continue;
+    if (roofNormalized <= baseNormalized + 0.006) continue;
 
     const roofY = (roofNormalized - 0.5) * HEIGHT_SCALE + 0.003;
     const baseY = (baseNormalized - 0.5) * HEIGHT_SCALE;
@@ -530,10 +557,15 @@ function createBuildingGeometry(
       );
       roofUvs.push(u, 1 - v);
     }
-    roofIndices.push(
-      roofStart, roofStart + 1, roofStart + 2,
-      roofStart, roofStart + 2, roofStart + 3,
-    );
+    for (const triangle of triangles) {
+      let [a, b, c] = triangle;
+      const [ua, va] = points[a];
+      const [ub, vb] = points[b];
+      const [uc, vc] = points[c];
+      const upward = (vb - va) * (uc - ua) - (ub - ua) * (vc - va);
+      if (upward < 0) [b, c] = [c, b];
+      roofIndices.push(roofStart + a, roofStart + b, roofStart + c);
+    }
 
     for (let edge = 0; edge < points.length; edge += 1) {
       const [u0, v0] = points[edge];
@@ -542,37 +574,68 @@ function createBuildingGeometry(
       const z0 = (v0 - 0.5) * terrain.planeDepth;
       const x1 = (u1 - 0.5) * terrain.planeWidth;
       const z1 = (v1 - 0.5) * terrain.planeDepth;
+
+      // Ground each wall segment into the local terrain so walls never hover in the air
+      const groundY0 = surfaceHeightAt(terrain, x0, z0, 1.0) - 0.025;
+      const groundY1 = surfaceHeightAt(terrain, x1, z1, 1.0) - 0.025;
+      const baseY0 = Math.min(baseY, groundY0);
+      const baseY1 = Math.min(baseY, groundY1);
+
       const start = wallPositions.length / 3;
       wallPositions.push(
         x0, roofY, z0,
         x1, roofY, z1,
-        x1, baseY, z1,
-        x0, baseY, z0,
+        x1, baseY1, z1,
+        x0, baseY0, z0,
       );
+
+      // Clean architectural wall color (bright stone top, grounded shadow base)
+      wallColors.push(
+        0.86, 0.88, 0.91,
+        0.86, 0.88, 0.91,
+        0.52, 0.55, 0.59,
+        0.52, 0.55, 0.59,
+      );
+
       wallIndices.push(
         start, start + 1, start + 2,
         start, start + 2, start + 3,
       );
+
+      // Sharp roof perimeter edge segment
+      edgePositions.push(x0, roofY + 0.002, z0, x1, roofY + 0.002, z1);
     }
     rendered += 1;
   }
 
   if (!rendered) return null;
 
+  const roofNormals = new Float32Array(roofPositions.length);
+  for (let i = 0; i < roofPositions.length; i += 3) {
+    roofNormals[i] = 0;
+    roofNormals[i + 1] = 1;
+    roofNormals[i + 2] = 0;
+  }
+
   const roofs = new THREE.BufferGeometry();
   roofs.setAttribute("position", new THREE.Float32BufferAttribute(roofPositions, 3));
+  roofs.setAttribute("normal", new THREE.BufferAttribute(roofNormals, 3));
   roofs.setAttribute("uv", new THREE.Float32BufferAttribute(roofUvs, 2));
   roofs.setIndex(roofIndices);
-  roofs.computeVertexNormals();
   roofs.computeBoundingSphere();
 
   const walls = new THREE.BufferGeometry();
   walls.setAttribute("position", new THREE.Float32BufferAttribute(wallPositions, 3));
+  walls.setAttribute("color", new THREE.Float32BufferAttribute(wallColors, 3));
   walls.setIndex(wallIndices);
   walls.computeVertexNormals();
   walls.computeBoundingSphere();
 
-  return { roofs, walls, count: rendered };
+  const edges = new THREE.BufferGeometry();
+  edges.setAttribute("position", new THREE.Float32BufferAttribute(edgePositions, 3));
+  edges.computeBoundingSphere();
+
+  return { roofs, walls, edges, count: rendered };
 }
 
 function BuildingSolids({
@@ -599,6 +662,7 @@ function BuildingSolids({
   useEffect(() => () => {
     geometry?.roofs.dispose();
     geometry?.walls.dispose();
+    geometry?.edges.dispose();
   }, [geometry]);
 
   useEffect(() => {
@@ -613,9 +677,12 @@ function BuildingSolids({
     loader.load(textureUrl, (texture) => {
       loaded = texture;
       texture.colorSpace = THREE.SRGBColorSpace;
+      texture.generateMipmaps = true;
       texture.minFilter = THREE.LinearMipmapLinearFilter;
       texture.magFilter = THREE.LinearFilter;
       texture.anisotropy = 16;
+      texture.wrapS = THREE.ClampToEdgeWrapping;
+      texture.wrapT = THREE.ClampToEdgeWrapping;
       texture.needsUpdate = true;
       if (active) setRoofTexture(texture);
       else texture.dispose();
@@ -632,6 +699,7 @@ function BuildingSolids({
     <group scale={[1, exaggeration, 1]}>
       <mesh geometry={geometry.roofs} castShadow receiveShadow raycast={() => undefined}>
         <meshStandardMaterial
+          key={roofTexture ? "roof-textured" : "roof-flat"}
           map={showTexture ? roofTexture : null}
           color={showTexture && roofTexture ? "#ffffff" : "#73b79b"}
           roughness={0.78}
@@ -644,13 +712,18 @@ function BuildingSolids({
       </mesh>
       <mesh geometry={geometry.walls} castShadow receiveShadow raycast={() => undefined}>
         <meshStandardMaterial
-          color="#737b84"
-          roughness={0.92}
-          metalness={0.02}
+          vertexColors
+          roughness={0.88}
+          metalness={0.05}
           wireframe={wireframe}
           side={THREE.DoubleSide}
         />
       </mesh>
+      {!wireframe ? (
+        <lineSegments geometry={geometry.edges} raycast={() => undefined}>
+          <lineBasicMaterial color="#1a232c" linewidth={1.5} transparent opacity={0.8} />
+        </lineSegments>
+      ) : null}
     </group>
   );
 }
@@ -871,7 +944,7 @@ function CameraControls({
   autoRotate: boolean;
 }) {
   const controlsRef = useRef<ElementRef<typeof OrbitControls> | null>(null);
-  const { camera } = useThree();
+  const { camera, invalidate } = useThree();
 
   useEffect(() => {
     if (preset === "topdown") {
@@ -886,6 +959,17 @@ function CameraControls({
       controlsRef.current?.update();
     }
   }, [camera, resetKey, preset]);
+
+  useEffect(() => {
+    if (!autoRotate) return;
+    let frame = 0;
+    const pump = () => {
+      invalidate();
+      frame = requestAnimationFrame(pump);
+    };
+    frame = requestAnimationFrame(pump);
+    return () => cancelAnimationFrame(frame);
+  }, [autoRotate, invalidate]);
 
   return (
     <OrbitControls
