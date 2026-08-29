@@ -102,7 +102,7 @@ a = Analysis(
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
-    runtime_hooks=[],
+    runtime_hooks=[str(Path(SPECPATH) / "rthook_isolate_path.py")],
     # Torch bundles its full test suite and both CUDA and CPU toolchains;
     # excluding development-only packages keeps the build from ballooning.
     excludes=["tkinter", "matplotlib", "pytest", "IPython", "notebook"],

@@ -6,4 +6,7 @@ Pillow>=10.3,<13
 rasterio>=1.3.10,<2
 torch>=2.2
 transformers>=4.45,<5
+# ml.osm queries the Overpass API directly; today it only arrives as a
+# transitive dependency of huggingface_hub.
+requests>=2.31,<3
 safetensors>=0.4.3

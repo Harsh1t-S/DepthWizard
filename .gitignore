@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .venv/
+.venv-cpu/
 venv/
 env/
 .pytest_cache/
@@ -67,3 +68,5 @@ data/sample/*
 packaging/hf_cache/
 build/
 dist/
+dist-cpu/
+dist-cuda/

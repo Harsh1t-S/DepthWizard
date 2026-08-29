@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,23 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_OSM_CACHE_DIR = Path("data/cache/osm")
+REPO_OSM_CACHE_DIR = Path("data/cache/osm")
+
+
+def default_osm_cache_dir() -> Path:
+    """Where Overpass responses are cached.
+
+    A relative path resolves against the launch directory, which a packaged
+    build does not control: Explorer can start the executable anywhere, and an
+    install under Program Files is not writable at all. The desktop launcher
+    therefore names a per-user location, and the repo-relative path stays the
+    default for source checkouts.
+    """
+
+    configured = os.getenv("DEPTHWIZARD_CACHE_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve() / "osm"
+    return REPO_OSM_CACHE_DIR
 
 
 def fetch_osm_footprints(
@@ -21,7 +38,7 @@ def fetch_osm_footprints(
     width: int,
     height: int,
     transform: Any,
-    cache_dir: Path = DEFAULT_OSM_CACHE_DIR,
+    cache_dir: Path | None = None,
     timeout: int = 12,
 ) -> list[dict[str, Any]]:
     """Query OpenStreetMap Overpass API for building footprint polygons in the scene bounds.
@@ -58,11 +75,18 @@ def fetch_osm_footprints(
     # Unique cache key for this bounding box
     bbox_key = f"{min_lat:.5f},{min_lon:.5f},{max_lat:.5f},{max_lon:.5f}"
     cache_hash = hashlib.sha256(bbox_key.encode()).hexdigest()[:16]
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_file = cache_dir / f"osm_buildings_{cache_hash}.json"
+    if cache_dir is None:
+        cache_dir = default_osm_cache_dir()
+    # An unwritable cache costs a round trip, not the footprints, so keep going.
+    cache_file: Path | None = None
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = cache_dir / f"osm_buildings_{cache_hash}.json"
+    except OSError as exc:
+        logger.debug("OSM cache directory %s is unusable: %s", cache_dir, exc)
 
     osm_data = None
-    if cache_file.is_file():
+    if cache_file is not None and cache_file.is_file():
         try:
             with open(cache_file, "r", encoding="utf-8") as f:
                 osm_data = json.load(f)
@@ -92,8 +116,12 @@ def fetch_osm_footprints(
             )
             if resp.status_code == 200:
                 osm_data = resp.json()
-                with open(cache_file, "w", encoding="utf-8") as f:
-                    json.dump(osm_data, f)
+                if cache_file is not None:
+                    try:
+                        with open(cache_file, "w", encoding="utf-8") as f:
+                            json.dump(osm_data, f)
+                    except OSError as exc:
+                        logger.debug("Could not cache the OSM response: %s", exc)
         except Exception as exc:
             logger.debug("Overpass API request failed or timed out: %s", exc)
             return []
